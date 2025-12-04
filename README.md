@@ -1,4 +1,4 @@
-# Transformer-based Image Compression..
+# Transformer-based Image Compression
 Pytorch Implementation of "Transformer-based Image Compression"[[arXiv]](https://arxiv.org/abs/2111.06707), DCC 2022.
 
 Our newly released work **"TinyLIC"** with more efficient performance can be found at the [homepage](https://njuvision.github.io/TinyLIC/). 
