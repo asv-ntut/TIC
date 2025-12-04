@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Conda environments
+/envs/
+/conda-bld/
+
+# IDE - PyCharm
+.idea/
+
+# Logs and data
+*.log
+wandb/
+reconstructed/
+reconstructed_outputs/
+distilled/
+Tokyo_Patches/
+
+# Other
+.DS_Store
+
+# 忽略指定的預訓練模型
+pretrained/tic/3/checkpoint.pth.tar
+pretrained/tic/3/checkpoint_best_loss.pth.tar
