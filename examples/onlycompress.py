@@ -587,9 +587,10 @@ def save_satellite_packet(out_enc, output_path, img_id, row, col):
     shape = out_enc["shape"]
 
     # 1. 準備 Payload Data
-    # Z-Hat (Raw Floats)
+    # Z-Hat (Raw Floats) -> Zlib Compressed (Lossless & Deterministic)
     z_hat_np = z_hat.cpu().detach().numpy().astype(np.float32)
     z_hat_bytes = z_hat_np.tobytes()
+    z_hat_compressed = zlib.compress(z_hat_bytes, level=9)
     
     # Y-String
     if isinstance(y_strings[0], (bytes, bytearray)):
@@ -603,13 +604,13 @@ def save_satellite_packet(out_enc, output_path, img_id, row, col):
     version = PACKET_VERSION
     h, w = shape
     len_y = len(y_str_payload)
-    len_z = len(z_hat_bytes)
+    len_z = len(z_hat_compressed)
 
     header = struct.pack('<3sBBBBHHII', 
                          magic, version, img_id, row, col, h, w, len_y, len_z)
 
     # 3. 組合完整封包 (Header + Payloads)
-    packet_content = header + y_str_payload + z_hat_bytes
+    packet_content = header + y_str_payload + z_hat_compressed
 
     # 4. 計算 CRC32
     crc = zlib.crc32(packet_content) & 0xffffffff

@@ -679,9 +679,15 @@ def load_satellite_packet(bin_path):
         y_str = data[cursor : cursor + len_y]
         cursor += len_y
         
-        z_hat_bytes = data[cursor : cursor + len_z]
+        z_hat_compressed = data[cursor : cursor + len_z]
         
-        # 解析 Z-Hat
+        # 解析 Z-Hat (Zlib Decompress -> Raw Floats)
+        try:
+            z_hat_bytes = zlib.decompress(z_hat_compressed)
+        except Exception as e:
+            print(f"[Error] Zlib Decompress Failed: {e}")
+            return None
+
         z_hat_np = np.frombuffer(z_hat_bytes, dtype=np.float32)
         
         # z_hat 的 channel 數是 N=128
