@@ -104,7 +104,7 @@ cdf.back() = 1 << precision: 強制設定最後一個元素為 16，確保 CDF �
 此時 cdf 的狀態: {0, 2, 13, 16} */
 
   for (int i = 0; i < static_cast<int>(cdf.size() - 1); ++i) {
-    if (cdf[i] == cdf[i + 1]) { #確保 沒有空元素
+    if (cdf[i] == cdf[i + 1]) { //確保 沒有空元素
       /* Try to steal frequency from low-frequency symbols */
       uint32_t best_freq = ~0u;/*初始化為最大整數*/
       int best_steal = -1;/*初始化為無效索引*/
@@ -131,12 +131,12 @@ best_freq 和 best_steal: 用來記錄目前為止找到的最佳人選的「頻
 
       assert(best_steal != -1);
 
-      if (best_steal < i) { #金主在窮人前面
+      if (best_steal < i) { //金主在窮人前面
         for (int j = best_steal + 1; j <= i; ++j) {
           cdf[j]--;
         }
       } else {
-        assert(best_steal > i);#金主在窮人後面
+        assert(best_steal > i);//金主在窮人後面
         for (int j = i + 1; j <= best_steal; ++j) {
           cdf[j]++;
         }

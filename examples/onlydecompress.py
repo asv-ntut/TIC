@@ -598,8 +598,8 @@ from PIL import Image
 # ==============================================================================
 try:
     from conv2 import SimpleConvStudentModel
-except ImportError:
-    print("錯誤: 找不到 conv2.py，請確認檔案位置。")
+except ImportError as e:
+    print(f"錯誤: 找不到 conv2.py，或其依賴套件載入失敗。\n詳細錯誤: {e}")
     sys.exit(1)
 
 try:
