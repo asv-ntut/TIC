@@ -524,69 +524,103 @@ except ImportError:
 def compress_method(self, x):
     y = self.g_a(x)
     z = self.h_a(y)
+    # ==========================================================================
+    # 核心修復 V8: 繞過 EntropyBottleneck (Bypass Z-stream)
+    # ==========================================================================
+    # 為了徹底排除 EntropyBottleneck 解碼不一致的問題，
+    # 我們直接將 z_hat (Raw Tensor) 存入封包。
+    # 這裡必須使用 compress -> decompress 流程產生的 z_hat，
+    # 以確保包含 medians 的修正，且與原本的解碼數值一致。
+    
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+    
+    # 繼續計算 scales_hat 以便進行 Y 的壓縮
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
+
+    # V9 量化策略: 強制對齊 Scale Table (0.5, 1.0, 1.5 ...)
+    # 之前的 +0.25 會導致數值落在兩個刻度中間 (e.g. 0.75)，造成跨平台浮點數判定不一致
+    # 改用 round(x * 2) / 2，直接吸附到刻度上 (e.g. 0.75 -> 1.0, 0.74 -> 0.5)
+    # 這樣有 +/- 0.25 的超大容錯空間
+    scales_hat = torch.round(scales_hat * 2) / 2
+    scales_hat = scales_hat.clamp(0.5, 32.0)
+    
+    means_hat = torch.round(means_hat * 100) / 100
+    
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
     y_strings = self.gaussian_conditional.compress(y, indexes, means=means_hat)
-    return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
+    
+    # 回傳 z_hat 本體而不是 z_strings
+    return {"strings": [y_strings, z_hat], "shape": z.size()[-2:]}
 
 
 SimpleConvStudentModel.compress = compress_method
 
 
+from conv2 import get_scale_table
+
 # ==============================================================================
 # 衛星通訊專用封包函式 (核心修改)
 # ==============================================================================
+PACKET_VERSION = 8  # V8: Bypass EntropyBottleneck (Raw Z-hat)
+
 def save_satellite_packet(out_enc, output_path, img_id, row, col):
     """
-    打包成衛星傳輸格式：
-    Header [7 bytes] + Payload [N bytes] + CRC32 [4 bytes]
-
-    Header 結構:
-    - Image ID (1 byte)
-    - Row Index (1 byte)
-    - Col Index (1 byte)
-    - Payload Length (4 bytes)
+    儲存封包: Header + Y_Strings + Z_Hat (Raw) + CRC32
+    Format (Little Endian <):
+    [Magic:3] 'TIC'
+    [Version:1] 8
+    [ImgID:1]
+    [Row:1]
+    [Col:1]
+    [H:2]
+    [W:2]
+    [LenY:4]
+    [LenZ:4]
+    [Payload Y]
+    [Payload Z]
+    [CRC32:4]
     """
-
-    # 1. 建構 Payload (資料本體)
-    # Payload 格式: Shape(4) + LenZ(4) + Z + LenY(4) + Y
-    payload = bytearray()
-
+    y_strings = out_enc["strings"][0]
+    z_hat = out_enc["strings"][1]  # Tensor
     shape = out_enc["shape"]
-    z_str = out_enc["strings"][1][0]
-    y_str = out_enc["strings"][0][0]
 
-    # 加入 Shape (Height, Width) - 各 2 bytes
-    payload.extend(shape[0].to_bytes(2, 'little'))
-    payload.extend(shape[1].to_bytes(2, 'little'))
+    # 1. 準備 Payload Data
+    # Z-Hat (Raw Floats)
+    z_hat_np = z_hat.cpu().detach().numpy().astype(np.float32)
+    z_hat_bytes = z_hat_np.tobytes()
+    
+    # Y-String
+    if isinstance(y_strings[0], (bytes, bytearray)):
+         y_str_payload = b''.join(y_strings)
+    else:
+         y_str_payload = b''.join(y_strings[0])
 
-    # 加入 Z String
-    payload.extend(len(z_str).to_bytes(4, 'little'))
-    payload.extend(z_str)
+    # 2. 準備 Header (19 bytes)
+    # Magic(3) + Ver(1) + ID(1) + Row(1) + Col(1) + H(2) + W(2) + LenY(4) + LenZ(4)
+    magic = b'TIC'
+    version = PACKET_VERSION
+    h, w = shape
+    len_y = len(y_str_payload)
+    len_z = len(z_hat_bytes)
 
-    # 加入 Y String
-    payload.extend(len(y_str).to_bytes(4, 'little'))
-    payload.extend(y_str)
+    header = struct.pack('<3sBBBBHHII', 
+                         magic, version, img_id, row, col, h, w, len_y, len_z)
 
-    # 2. 建構 Header
-    # 格式: <BBBI (Little Endian: unsigned char, u_char, u_char, unsigned int)
-    # img_id, row, col 必須 < 256
-    header = struct.pack('<BBBI', int(img_id), int(row), int(col), len(payload))
+    # 3. 組合完整封包 (Header + Payloads)
+    packet_content = header + y_str_payload + z_hat_bytes
 
-    # 3. 計算 CRC32 (Header + Payload)
-    # 地面站會驗證這一段，確保 header 和資料都沒壞
-    checksum_data = header + payload
-    crc_value = zlib.crc32(checksum_data) & 0xffffffff
-    footer = struct.pack('<I', crc_value)
+    # 4. 計算 CRC32
+    crc = zlib.crc32(packet_content) & 0xffffffff
+    footer = struct.pack('<I', crc)
 
-    # 4. 寫入檔案
+    # 5. 寫入檔案 (含 fsync)
     with open(output_path, "wb") as f:
-        f.write(header)
-        f.write(payload)
+        f.write(packet_content)
         f.write(footer)
+        f.flush()
+        os.fsync(f.fileno())  # 確保寫入磁碟
 
 
 # ==============================================================================
@@ -661,6 +695,46 @@ def load_checkpoint(checkpoint_path):
 
     model = SimpleConvStudentModel(N=N, M=M)
     model.load_state_dict(new_state_dict, strict=False)
+    
+    # ==========================================================================
+    # 核心修復 V6: 強制統一 Scale Table (Coarse Grid)
+    # ==========================================================================
+    # 使用粗刻度 0.5 ~ 32.0 (共 64 階)
+    scale_table = torch.linspace(0.5, 32.0, 64)
+    
+    # 強制更新模型內的表和 CDF
+    model.gaussian_conditional.update_scale_table(scale_table, force=True)
+    model.update(force=True)
+    
+    # ==========================================================================
+    # 核心修復 V5/V7: 強制統一 EntropyBottleneck CDFs & Medians
+    # ==========================================================================
+    try:
+        from fixed_cdfs import FIXED_EB_CDF, FIXED_EB_OFFSET, FIXED_EB_LENGTH, FIXED_EB_MEDIANS
+        eb = model.entropy_bottleneck
+        device = eb._quantized_cdf.device
+        
+        # 1. 覆蓋 CDF, Offset, Length (V5)
+        eb._quantized_cdf.resize_(torch.tensor(FIXED_EB_CDF).shape).copy_(
+            torch.tensor(FIXED_EB_CDF, device=device, dtype=torch.int32))
+        eb._offset.resize_(torch.tensor(FIXED_EB_OFFSET).shape).copy_(
+            torch.tensor(FIXED_EB_OFFSET, device=device, dtype=torch.int32))
+        eb._cdf_length.resize_(torch.tensor(FIXED_EB_LENGTH).shape).copy_(
+            torch.tensor(FIXED_EB_LENGTH, device=device, dtype=torch.int32))
+            
+        # 2. 覆蓋 Quantiles/Medians (V7)
+        fixed_medians = torch.tensor(FIXED_EB_MEDIANS, device=device)
+        eb.quantiles.data[:, 0, 1] = fixed_medians.squeeze()
+            
+        print("[INFO] EntropyBottleneck CDFs & Medians overwritten (V7 Fix).")
+    except ImportError:
+        print("[WARNING] fixed_cdfs.py not found! EntropyBottleneck might be non-deterministic.")
+    except Exception as e:
+        print(f"[WARNING] Failed to overwrite EntropyBottleneck CDFs: {e}")
+    # ==========================================================================
+
+    return model.eval()
+
     return model.eval()
 
 

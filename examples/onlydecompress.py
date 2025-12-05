@@ -340,61 +340,6 @@
 #     cursor += 4
 #     y_str = payload_data[cursor:cursor + len_y]
 
-#     return {"strings": [[y_str], [z_str]], "shape": shape}
-
-
-# def load_satellite_packet(bin_path):
-#     """
-#     讀取封包、驗證 CRC、並解析 Header
-#     回傳: 字典 {row, col, img_id, strings, shape} 或 None (若損毀)
-#     """
-#     try:
-#         with open(bin_path, "rb") as f:
-#             data = f.read()
-
-#         # 1. 基本長度檢查 (Header 7 + CRC 4 = 11 bytes min)
-#         if len(data) < 11:
-#             print(f"\n[警告] 封包過短，丟棄: {os.path.basename(bin_path)}")
-#             return None
-
-#         # 2. 分離校驗碼 (Footer 4 bytes)
-#         received_crc = struct.unpack('<I', data[-4:])[0]
-#         content_to_check = data[:-4]
-
-#         # 3. 計算並比對 CRC
-#         calculated_crc = zlib.crc32(content_to_check) & 0xffffffff
-
-#         if received_crc != calculated_crc:
-#             print(f"\n[嚴重錯誤] CRC 校驗失敗 (Bit Error)，丟棄封包: {os.path.basename(bin_path)}")
-#             return None
-
-#         # 4. 解析 Header (前 7 bytes)
-#         # 格式: ID(1), Row(1), Col(1), Len(4)
-#         img_id, row, col, payload_len = struct.unpack('<BBBI', data[:7])
-
-#         # 5. 提取 Payload
-#         payload = data[7:-4]
-
-#         # 雙重檢查長度
-#         if len(payload) != payload_len:
-#             print(f"\n[錯誤] Payload 長度不符 Header 描述，丟棄: {os.path.basename(bin_path)}")
-#             return None
-
-#         # 6. 解析 Payload 內容
-#         parsed_data = parse_payload_bytes(payload)
-
-#         return {
-#             "row": row,
-#             "col": col,
-#             "img_id": img_id,
-#             "strings": parsed_data["strings"],
-#             "shape": parsed_data["shape"]
-#         }
-
-#     except Exception as e:
-#         print(f"\n[例外] 讀取封包發生未預期錯誤 {bin_path}: {e}")
-#         return None
-
 
 # @torch.no_grad()
 # def process_decompress_packet(model, packet_data):
@@ -620,9 +565,26 @@ except ImportError:
 # ==============================================================================
 def decompress_method(self, strings, shape):
     assert isinstance(strings, list) and len(strings) == 2
-    z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
+    # ==========================================================================
+    # 核心修復 V8: 繞過 EntropyBottleneck (Bypass Z-stream)
+    # ==========================================================================
+    # 我們直接使用從封包讀取的 z_hat (Raw Tensor)
+    # 這裡的 strings[1] 其實是 z_hat tensor
+    z_hat = strings[1]
+    
+    # 繼續計算 scales_hat
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
+
+    # V9 量化策略: 強制對齊 Scale Table (0.5, 1.0, 1.5 ...)
+    # 之前的 +0.25 會導致數值落在兩個刻度中間 (e.g. 0.75)，造成跨平台浮點數判定不一致
+    # 改用 round(x * 2) / 2，直接吸附到刻度上 (e.g. 0.75 -> 1.0, 0.74 -> 0.5)
+    # 這樣有 +/- 0.25 的超大容錯空間
+    scales_hat = torch.round(scales_hat * 2) / 2
+    scales_hat = scales_hat.clamp(0.5, 32.0)
+    
+    means_hat = torch.round(means_hat * 100) / 100
+    
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
     y_hat = self.gaussian_conditional.decompress(strings[0], indexes, means=means_hat)
     x_hat = self.g_s(y_hat).clamp_(0, 1)
@@ -632,9 +594,6 @@ def decompress_method(self, strings, shape):
 SimpleConvStudentModel.decompress = decompress_method
 
 
-# ==============================================================================
-# 衛星通訊專用：封包讀取與驗證 (核心修改)
-# ==============================================================================
 def parse_payload_bytes(payload_data):
     """
     解析 Payload 的二進位內容，還原成 strings 和 shape
@@ -663,56 +622,83 @@ def parse_payload_bytes(payload_data):
     return {"strings": [[y_str], [z_str]], "shape": shape}
 
 
+from conv2 import get_scale_table
+
+PACKET_VERSION = 8
+
 def load_satellite_packet(bin_path):
     """
-    讀取封包、驗證 CRC、並解析 Header
-    回傳: 字典 {row, col, img_id, strings, shape} 或 None (若損毀)
+    讀取封包: Header + Y_Strings + Z_Hat (Raw) + CRC32
+    Format (Little Endian <):
+    [Magic:3][Ver:1][ID:1][Row:1][Col:1][H:2][W:2][LenY:4][LenZ:4] ... [CRC:4]
     """
+    import numpy as np
     try:
         with open(bin_path, "rb") as f:
             data = f.read()
 
-        # 1. 基本長度檢查 (Header 7 + CRC 4 = 11 bytes min)
-        if len(data) < 11:
-            print(f"\n[警告] 封包過短，丟棄: {os.path.basename(bin_path)}")
+        # 最小長度檢查: Header(19) + CRC(4) = 23 bytes
+        if len(data) < 23: 
+            print(f"[Error] File too small: {os.path.basename(bin_path)}")
             return None
 
-        # 2. 分離校驗碼 (Footer 4 bytes)
+        # 1. CRC Check (最後 4 bytes)
         received_crc = struct.unpack('<I', data[-4:])[0]
-        content_to_check = data[:-4]
+        content = data[:-4]
+        calc_crc = zlib.crc32(content) & 0xffffffff
 
-        # 3. 計算並比對 CRC
-        calculated_crc = zlib.crc32(content_to_check) & 0xffffffff
-
-        if received_crc != calculated_crc:
-            print(f"\n[嚴重錯誤] CRC 校驗失敗 (Bit Error)，丟棄封包: {os.path.basename(bin_path)}")
+        if received_crc != calc_crc:
+            print(f"[Corrupt] CRC Fail: {os.path.basename(bin_path)}")
             return None
 
-        # 4. 解析 Header (前 7 bytes)
-        # 格式: ID(1), Row(1), Col(1), Len(4)
-        img_id, row, col, payload_len = struct.unpack('<BBBI', data[:7])
-
-        # 5. 提取 Payload
-        payload = data[7:-4]
-
-        # 雙重檢查長度
-        if len(payload) != payload_len:
-            print(f"\n[錯誤] Payload 長度不符 Header 描述，丟棄: {os.path.basename(bin_path)}")
+        # 2. Parse Header (19 bytes)
+        # Magic(3) + Ver(1) + ID(1) + Row(1) + Col(1) + H(2) + W(2) + LenY(4) + LenZ(4)
+        header_size = 19
+        header_data = data[:header_size]
+        
+        magic, version, img_id, row, col, h, w, len_y, len_z = struct.unpack('<3sBBBBHHII', header_data)
+        
+        # Magic Check
+        if magic != b'TIC':
+            print(f"[Error] Invalid Magic: {magic}")
+            return None
+            
+        # Version Check
+        if version != PACKET_VERSION:
+            print(f"[Error] Version Mismatch: File={version}, Decoder={PACKET_VERSION}")
             return None
 
-        # 6. 解析 Payload 內容
-        parsed_data = parse_payload_bytes(payload)
+        # 3. Parse Payloads
+        # Payload starts at 19
+        cursor = header_size
+        
+        if len(data) < cursor + len_y + len_z + 4:
+            print(f"[Error] Incomplete Payload")
+            return None
+            
+        y_str = data[cursor : cursor + len_y]
+        cursor += len_y
+        
+        z_hat_bytes = data[cursor : cursor + len_z]
+        
+        # 解析 Z-Hat
+        z_hat_np = np.frombuffer(z_hat_bytes, dtype=np.float32)
+        
+        # z_hat 的 channel 數是 N=128
+        try:
+            z_hat = torch.from_numpy(z_hat_np).view(1, 128, h, w)
+        except Exception as e:
+            print(f"[Error] Z-Hat Shape Mismatch: {e}")
+            return None
 
         return {
-            "row": row,
-            "col": col,
-            "img_id": img_id,
-            "strings": parsed_data["strings"],
-            "shape": parsed_data["shape"]
+            "row": row, "col": col, "img_id": img_id,
+            "strings": [[y_str], z_hat], # z_hat 放在 strings[1]
+            "shape": (h, w)
         }
 
     except Exception as e:
-        print(f"\n[例外] 讀取封包發生未預期錯誤 {bin_path}: {e}")
+        print(f"[Read Error] {bin_path}: {e}")
         return None
 
 
@@ -770,9 +756,55 @@ def load_checkpoint(checkpoint_path):
         M = new_state_dict[keys[-1]].size(0)
     except:
         pass
+    
+    # DEBUG: Print keys related to gaussian_conditional
+    print("\n[DEBUG] Checkpoint Keys (GaussianConditional):")
+    for k in new_state_dict.keys():
+        if "gaussian_conditional" in k:
+            print(f"{k}: {new_state_dict[k].shape if hasattr(new_state_dict[k], 'shape') else 'No Shape'}")
 
     model = SimpleConvStudentModel(N=N, M=M)
     model.load_state_dict(new_state_dict, strict=False)
+    
+    # ==========================================================================
+    # 核心修復 V6: 強制統一 Scale Table (Coarse Grid)
+    # ==========================================================================
+    # 使用粗刻度 0.5 ~ 32.0 (共 64 階)
+    scale_table = torch.linspace(0.5, 32.0, 64)
+    
+    # 強制更新模型內的表和 CDF
+    model.gaussian_conditional.update_scale_table(scale_table, force=True)
+    model.update(force=True)
+    
+    # ==========================================================================
+    # 核心修復 V5/V7: 強制統一 EntropyBottleneck CDFs & Medians
+    # ==========================================================================
+    try:
+        from fixed_cdfs import FIXED_EB_CDF, FIXED_EB_OFFSET, FIXED_EB_LENGTH, FIXED_EB_MEDIANS
+        eb = model.entropy_bottleneck
+        device = eb._quantized_cdf.device
+        
+        # 1. 覆蓋 CDF, Offset, Length (V5)
+        eb._quantized_cdf.resize_(torch.tensor(FIXED_EB_CDF).shape).copy_(
+            torch.tensor(FIXED_EB_CDF, device=device, dtype=torch.int32))
+        eb._offset.resize_(torch.tensor(FIXED_EB_OFFSET).shape).copy_(
+            torch.tensor(FIXED_EB_OFFSET, device=device, dtype=torch.int32))
+        eb._cdf_length.resize_(torch.tensor(FIXED_EB_LENGTH).shape).copy_(
+            torch.tensor(FIXED_EB_LENGTH, device=device, dtype=torch.int32))
+            
+        # 2. 覆蓋 Quantiles/Medians (V7)
+        fixed_medians = torch.tensor(FIXED_EB_MEDIANS, device=device)
+        eb.quantiles.data[:, 0, 1] = fixed_medians.squeeze()
+            
+        print("[INFO] EntropyBottleneck CDFs & Medians overwritten (V7 Fix).")
+    except ImportError:
+        print("[WARNING] fixed_cdfs.py not found! EntropyBottleneck might be non-deterministic.")
+    except Exception as e:
+        print(f"[WARNING] Failed to overwrite EntropyBottleneck CDFs: {e}")
+    # ==========================================================================
+
+    return model.eval()
+
     return model.eval()
 
 
