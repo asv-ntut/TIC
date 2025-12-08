@@ -2,6 +2,7 @@ cd ~/TIC
 python -m venv .venv
 source .venv/bin/activate
 pip install -r examples/requirements.txt
+pip install -e .
 
 cd examples
 python dump_cdfs.py

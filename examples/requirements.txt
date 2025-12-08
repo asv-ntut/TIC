@@ -5,4 +5,3 @@ Pillow
 timm
 scipy
 pytorch-msssim
-compressai
