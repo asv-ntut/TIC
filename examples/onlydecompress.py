@@ -574,15 +574,21 @@ def decompress_method(self, strings, shape):
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
     # 量化策略: 強制對齊 Scale Table (0.5, 1.0, 1.5 ...)
-    # 改用 round(x * 2) / 2，直接吸附到刻度上 (e.g. 0.75 -> 1.0, 0.74 -> 0.5)
-    # 這樣有 +/- 0.25 的超大容錯空間
-    scales_hat = torch.round(scales_hat * 2) / 2
+    # 改用 round(x * 2) / 2，直接吸附到刻度上    print("DEBUG: Scales Done. Quantizing (CPU)...")
+
+    # [CPU] Quantization Strategy (Must match compress with Epsilon)
+    scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
     scales_hat = scales_hat.clamp(0.5, 32.0)
     
-    means_hat = torch.round(means_hat * 100) / 100
+    means_hat = torch.round((means_hat * 100) + 1e-5) / 100
     
+    # [CPU] Build Indexes
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    y_hat = self.gaussian_conditional.decompress(strings[0], indexes, means=means_hat)
+    
+    # DEBUG Checksum: Compare this with Encoder output!
+    print(f"DEBUG: Decoder Indexes Checksum: {indexes.to(dtype=torch.float32).sum().item():.3f}")
+    
+    # [Windows Stability Fix] Cast to int32 explicit AND ensure contiguous memorympress(strings[0], indexes, means=means_hat)
     x_hat = self.g_s(y_hat).clamp_(0, 1)
     return {"x_hat": x_hat}
 

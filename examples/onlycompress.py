@@ -539,14 +539,18 @@ def compress_method(self, x):
 
     # 量化策略: 強制對齊 Scale Table (0.5, 1.0, 1.5 ...)
     # 改用 round(x * 2) / 2，直接吸附到刻度上 (e.g. 0.75 -> 1.0, 0.74 -> 0.5)
-    # 這樣有 +/- 0.25 的超大容錯空間
-    scales_hat = torch.round(scales_hat * 2) / 2
+    # [CPU] Quantization Strategy (With Epsilon for Cross-Platform Stability)
+    # Adding 1e-5 prevents "0.500000 vs 0.499999" rounding flips between Mac/Linux
+    scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
     scales_hat = scales_hat.clamp(0.5, 32.0)
     
-    means_hat = torch.round(means_hat * 100) / 100
+    means_hat = torch.round((means_hat * 100) + 1e-5) / 100
     
     # [CPU] Build Indexes & Compress Y
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
+    
+    # DEBUG Checksum: Critical for verifying cross-platform sync
+    print(f"DEBUG: Encoder Indexes Checksum: {indexes.to(dtype=torch.float32).sum().item():.3f}")
     
     # [Linux/Cross-Platform Fix] Cast to int32 explicit for C++ bind stability
     indexes = indexes.to(dtype=torch.int32).contiguous()
