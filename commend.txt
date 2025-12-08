@@ -11,9 +11,9 @@ pip install -e .
 
 cd examples
 
-解壓縮端執行
+壓縮端執行
 python dump_cdfs.py
-確認TIC/examples/fixed_cdfs.py與壓縮端相同
+傳送TIC/examples/fixed_cdfs.py到解壓縮端 確保兩邊檔案相同
 
 python onlycompress.py "../wang_cropped_4097x3072.png" -p "../1130stcheckpoint_best_loss.pth" 
 python onlydecompress.py "output_satellite/wang_cropped_4097x3072" -p "../1130stcheckpoint_best_loss.pth" --original "../wang_cropped_4097x3072.png"

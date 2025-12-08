@@ -583,79 +583,29 @@ def decompress_method(self, strings, shape):
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # =========================================================================
-    # [V11 FIX] Cross-Platform Deterministic Quantization
-    # =========================================================================
-    # 問題：ARM Mac 和 x86 Ubuntu 的 h_s 浮點運算會產生微小差異 (e.g. 1e-6)
-    # 解法：將 scales_hat 直接映射到 Scale Table 的 **索引**，而非依賴浮點比較
-    # 
-    # Scale Table: [0.5, 1.0, 1.5, ..., 32.0] (64 levels, step = 0.5)
-    # 量化公式: index = round((clamp(scale, 0.5, 32.0) - 0.5) / 0.5)
-    #           scale_quantized = 0.5 + index * 0.5
-    # =========================================================================
-    
-    # Step 1: Clamp to valid range
+    # [V11] Cross-Platform Deterministic Quantization
+    # Scale Table: [0.5, 1.0, 1.5, ..., 32.0] (64 levels)
     scales_clamped = scales_hat.clamp(0.5, 32.0)
-    
-    # Step 2: Convert to index (0-63) using integer arithmetic
-    # 乘以 2 將 0.5 步長轉換為整數步長，再減 1 (因為 0.5 對應 index 0)
-    # 使用 floor 而非 round 可以避免邊界問題 (e.g. 0.9999 vs 1.0001)
-    scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64)
-    scale_indices = scale_indices.clamp(0, 63)
-    
-    # Step 3: Convert back to quantized scale values
+    scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64).clamp(0, 63)
     scales_hat = 0.5 + scale_indices.float() * 0.5
-    
-    # Step 4: Quantize means_hat (使用較大的量化步長以增加穩定性)
-    # 從 0.01 步長改為 0.1 步長
     means_hat = torch.floor(means_hat * 10 + 0.5) / 10
     
-    # [CPU] Build Indexes from quantized scales
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    
-    # [DEBUG] Checksum for cross-platform verification (only first patch)
-    if not hasattr(self, '_debug_printed') or not self._debug_printed:
-        print(f"[DECODER] z_hat sum: {z_hat.sum().item():.4f}")
-        print(f"[DECODER] scale_indices sum: {scale_indices.sum().item()}")
-        print(f"[DECODER] indexes sum: {indexes.sum().item()}")
-        self._debug_printed = True
-    
-    # [Windows Stability Fix] Cast to int32 explicit AND ensure contiguous memory
     indexes = indexes.to(dtype=torch.int32).contiguous()
     means_hat = means_hat.contiguous()
     
-    # [Safety Check]
-    max_idx = indexes.max().item()
-    min_idx = indexes.min().item()
-    
-    if max_idx >= 64 or min_idx < 0:
-        # print(f"!! WARNING !! Index out of bound detected ({min_idx}~{max_idx}). Clamping...")
+    if indexes.max().item() >= 64 or indexes.min().item() < 0:
         indexes = indexes.clamp(0, 63)
         
-    # [Windows Stability Strategy]
-    # 將解碼運算移至 CPU 執行，避開 Windows + CUDA + CompressAI C++ Extension 的潛在相容性問題
-    # 這能顯著降低 Segfault 機率
+    # Decompress Y on CPU
     y_hat = None
     try:
-        # Enforce single thread for this critical section to potential avoid race conditions in C++ ext
-        # though set_num_threads is global, it's safer here.
         prev_threads = torch.get_num_threads()
         torch.set_num_threads(1)
-        
-        indexes_cpu = indexes.cpu()
-        means_hat_cpu = means_hat.cpu()
-        
-        # 執行解碼 (on CPU)
-        y_hat_cpu = self.gaussian_conditional.decompress(strings[0], indexes_cpu, means=means_hat_cpu)
-        
-        # Restore threads
+        y_hat = self.gaussian_conditional.decompress(strings[0], indexes.cpu(), means=means_hat.cpu())
         torch.set_num_threads(prev_threads)
-        
-        y_hat = y_hat_cpu
-        
     except Exception as e:
-        print(f"\n[CRITICAL ERROR] Decompression Failed: {e}")
-        # Fallback: recover safely to avoid crash
+        print(f"[ERROR] Decompression Failed: {e}")
         y_hat = torch.zeros_like(means_hat)
 
     # 確保無 NaN
