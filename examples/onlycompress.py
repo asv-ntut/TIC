@@ -530,6 +530,16 @@ def compress_method(self, x):
     # 而是直接取出 z_hat (Tensor)，稍後在 save_satellite_packet 中使用 zlib 進行無損壓縮。
     # 強制執行 compress -> decompress 流程是為了確保 z_hat 數值包含 medians 修正，與解碼端一致。
     
+    # [Deterministic Fix] Force Critical Components to CPU
+    # This ensures that h_s (Conv2d) runs on CPU, matching the Decoder's behavior.
+    # GPU (CUDA) vs CPU floating point drift in h_s is the root cause of PSNR degradation (9dB).
+    self.entropy_bottleneck.cpu()
+    self.h_s.cpu()
+    self.gaussian_conditional.cpu()
+
+    # Move z to CPU for processing
+    z = z.cpu()
+    
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
     
