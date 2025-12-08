@@ -533,9 +533,6 @@ def compress_method(self, x):
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
     
-    print(f"DEBUG: z_hat checksum: {z_hat.sum().item():.3f}") # <--- NEW CHECKPOINT 1
-    
-    # 繼續計算 scales_hat 以便進行 Y 的壓縮
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
@@ -544,18 +541,12 @@ def compress_method(self, x):
     # [CPU] Quantization Strategy (With Epsilon for Cross-Platform Stability)
     # Adding 1e-5 prevents "0.500000 vs 0.499999" rounding flips between Mac/Linux
     scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
-    
-    print(f"DEBUG: scales_hat checksum (pre-clamp): {scales_hat.sum().item():.3f}") # <--- NEW CHECKPOINT 2
-    
     scales_hat = scales_hat.clamp(0.5, 32.0)
     
     means_hat = torch.round((means_hat * 100) + 1e-5) / 100
     
     # [CPU] Build Indexes & Compress Y
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    
-    # DEBUG Checksum: Critical for verifying cross-platform sync
-    print(f"DEBUG: Encoder Indexes Checksum: {indexes.to(dtype=torch.float32).sum().item():.3f}")
     
     # [Linux/Cross-Platform Fix] Cast to int32 explicit for C++ bind stability
     indexes = indexes.to(dtype=torch.int32).contiguous()
@@ -743,11 +734,6 @@ def load_checkpoint(checkpoint_path):
         # 1. 覆蓋 CDF, Offset, Length
         eb._quantized_cdf.resize_(torch.tensor(FIXED_EB_CDF).shape).copy_(
             torch.tensor(FIXED_EB_CDF, device=device, dtype=torch.int32))
-            
-        # DEBUG: Verify CDF Checksum
-        cdf_sum = torch.tensor(FIXED_EB_CDF, dtype=torch.float32).sum().item()
-        print(f"[INFO] FIXED_EB_CDF loaded. Checksum: {cdf_sum:.3f}")
-        
         eb._offset.resize_(torch.tensor(FIXED_EB_OFFSET).shape).copy_(
             torch.tensor(FIXED_EB_OFFSET, device=device, dtype=torch.int32))
         eb._cdf_length.resize_(torch.tensor(FIXED_EB_LENGTH).shape).copy_(

@@ -579,26 +579,18 @@ def decompress_method(self, strings, shape):
     if z_hat.device.type != 'cpu':
         z_hat = z_hat.cpu()
         
-    print(f"DEBUG: z_hat checksum: {z_hat.sum().item():.3f}")  # <--- NEW CHECKPOINT 1
-        
     # [CPU] Hyper Transform (h_s)
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
     # [CPU] Quantization Strategy (Must match compress with Epsilon)
     scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
-    
-    print(f"DEBUG: scales_hat checksum (pre-clamp): {scales_hat.sum().item():.3f}") # <--- NEW CHECKPOINT 2
-    
     scales_hat = scales_hat.clamp(0.5, 32.0)
     
     means_hat = torch.round((means_hat * 100) + 1e-5) / 100
     
     # [CPU] Build Indexes
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    
-    # DEBUG Checksum: Compare this with Encoder output!
-    print(f"DEBUG: Decoder Indexes Checksum: {indexes.to(dtype=torch.float32).sum().item():.3f}")
     
     # [Windows Stability Fix] Cast to int32 explicit AND ensure contiguous memory
     indexes = indexes.to(dtype=torch.int32).contiguous()
@@ -612,8 +604,6 @@ def decompress_method(self, strings, shape):
         # print(f"!! WARNING !! Index out of bound detected ({min_idx}~{max_idx}). Clamping...")
         indexes = indexes.clamp(0, 63)
         
-    print(f"DEBUG: Start Y-Decompress (CPU Mode, len={len(strings[0][0])})", flush=True)
-    
     # [Windows Stability Strategy]
     # 將解碼運算移至 CPU 執行，避開 Windows + CUDA + CompressAI C++ Extension 的潛在相容性問題
     # 這能顯著降低 Segfault 機率
@@ -634,7 +624,6 @@ def decompress_method(self, strings, shape):
         torch.set_num_threads(prev_threads)
         
         y_hat = y_hat_cpu
-        print("DEBUG: Y-Decompress Done. Moving to Device...", flush=True)
         
     except Exception as e:
         print(f"\n[CRITICAL ERROR] Decompression Failed: {e}")
@@ -648,7 +637,6 @@ def decompress_method(self, strings, shape):
         
     # 2. Main Transform (GPU)
     # 將解碼完的 Y 移回 GPU 以進行 g_s
-    print("DEBUG: Y-Decompress Done. Moving to Device (GPU)...")
     
     # 取得 GPU device from g_s parameters
     device = next(self.g_s.parameters()).device
@@ -839,11 +827,6 @@ def load_checkpoint(checkpoint_path):
         # 1. 覆蓋 CDF, Offset, Length
         eb._quantized_cdf.resize_(torch.tensor(FIXED_EB_CDF).shape).copy_(
             torch.tensor(FIXED_EB_CDF, device=device, dtype=torch.int32))
-            
-        # DEBUG: Verify CDF Checksum
-        cdf_sum = torch.tensor(FIXED_EB_CDF, dtype=torch.float32).sum().item()
-        print(f"[INFO] FIXED_EB_CDF loaded. Checksum: {cdf_sum:.3f}")
-        
         eb._offset.resize_(torch.tensor(FIXED_EB_OFFSET).shape).copy_(
             torch.tensor(FIXED_EB_OFFSET, device=device, dtype=torch.int32))
         eb._cdf_length.resize_(torch.tensor(FIXED_EB_LENGTH).shape).copy_(
