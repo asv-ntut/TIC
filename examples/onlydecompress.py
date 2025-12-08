@@ -565,10 +565,9 @@ except ImportError:
 # ==============================================================================
 def decompress_method(self, strings, shape):
     assert isinstance(strings, list) and len(strings) == 2
-    # 核心邏輯: 繞過 EntropyBottleneck (Bypass Z-stream)
-    # 我們直接使用從封包讀取的 z_hat (Raw Tensor)
-    # 這裡的 strings[1] 其實是 z_hat tensor
-    z_hat = strings[1]
+    # [V10] 恢復使用 EntropyBottleneck (Arithmetic Decoding)
+    # 依賴 Fixed CDFs (V7) 確保一致性
+    z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
     
     # 繼續計算 scales_hat
     gaussian_params = self.h_s(z_hat)
@@ -623,7 +622,7 @@ from conv2 import get_scale_table
 
 def load_satellite_packet(bin_path):
     """
-    讀取封包: Header + Y_Strings + Z_Hat (Compressed) + CRC32
+    讀取封包: Header + Y_Strings + Z_Strings (AI Compressed) + CRC32
     Format (Little Endian <):
     [Magic:3][ID:1][Row:1][Col:1][H:2][W:2][LenY:4][LenZ:4] ... [CRC:4]
     """
@@ -646,7 +645,7 @@ def load_satellite_packet(bin_path):
             print(f"[Corrupt] CRC Fail: {os.path.basename(bin_path)}")
             return None
 
-        # 2. Parse Header (18 bytes) - Removed Version
+        # 2. Parse Header (18 bytes)
         # Magic(3) + ID(1) + Row(1) + Col(1) + H(2) + W(2) + LenY(4) + LenZ(4)
         header_size = 18
         header_data = data[:header_size]
@@ -669,27 +668,12 @@ def load_satellite_packet(bin_path):
         y_str = data[cursor : cursor + len_y]
         cursor += len_y
         
-        z_hat_compressed = data[cursor : cursor + len_z]
+        z_str = data[cursor : cursor + len_z]
         
-        # 解析 Z-Hat (Zlib Decompress -> Raw Floats)
-        try:
-            z_hat_bytes = zlib.decompress(z_hat_compressed)
-        except Exception as e:
-            print(f"[Error] Zlib Decompress Failed: {e}")
-            return None
-
-        z_hat_np = np.frombuffer(z_hat_bytes, dtype=np.float32)
-        
-        # z_hat 的 channel 數是 N=128
-        try:
-            z_hat = torch.from_numpy(z_hat_np).view(1, 128, h, w)
-        except Exception as e:
-            print(f"[Error] Z-Hat Shape Mismatch: {e}")
-            return None
-
+        # 回傳原始字串，讓 decompress_method 去解碼
         return {
             "row": row, "col": col, "img_id": img_id,
-            "strings": [[y_str], z_hat], # z_hat 放在 strings[1]
+            "strings": [[y_str], [z_str]], 
             "shape": (h, w)
         }
 

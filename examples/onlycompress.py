@@ -525,10 +525,10 @@ def compress_method(self, x):
     y = self.g_a(x)
     z = self.h_a(y)
     # 核心邏輯: 繞過 EntropyBottleneck (Bypass Z-stream)
-    # 為了徹底排除 EntropyBottleneck 解碼不一致的問題，
-    # 我們直接將 z_hat (Raw Tensor) 存入封包。
-    # 這裡必須使用 compress -> decompress 流程產生的 z_hat，
-    # 以確保包含 medians 的修正，且與原本的解碼數值一致。
+    # 為了徹底排除 EntropyBottleneck (Arithmetic Coding) 跨平台解碼不一致的問題，
+    # 我們不使用 model.entropy_bottleneck.compress 產生的字串。
+    # 而是直接取出 z_hat (Tensor)，稍後在 save_satellite_packet 中使用 zlib 進行無損壓縮。
+    # 強制執行 compress -> decompress 流程是為了確保 z_hat 數值包含 medians 修正，與解碼端一致。
     
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
@@ -548,8 +548,9 @@ def compress_method(self, x):
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
     y_strings = self.gaussian_conditional.compress(y, indexes, means=means_hat)
     
-    # 回傳 z_hat 本體而不是 z_strings
-    return {"strings": [y_strings, z_hat], "shape": z.size()[-2:]}
+    # [V10] 回傳原本的 AI 壓縮字串 (z_strings)
+    # 依賴 Fixed CDFs (V7) + V9 Scale Fix 來確保解碼一致性
+    return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 
 
 SimpleConvStudentModel.compress = compress_method
@@ -563,7 +564,7 @@ from conv2 import get_scale_table
 
 def save_satellite_packet(out_enc, output_path, img_id, row, col):
     """
-    儲存封包: Header + Y_Strings + Z_Hat (Compressed) + CRC32
+    儲存封包: Header + Y_Strings + Z_Strings (AI Compressed) + CRC32
     Format (Little Endian <):
     [Magic:3] 'TIC'
     [ImgID:1]
@@ -578,33 +579,33 @@ def save_satellite_packet(out_enc, output_path, img_id, row, col):
     [CRC32:4]
     """
     y_strings = out_enc["strings"][0]
-    z_hat = out_enc["strings"][1]  # Tensor
+    z_strings = out_enc["strings"][1]  # AI Compressed Bytes
     shape = out_enc["shape"]
 
     # 1. 準備 Payload Data
-    # Z-Hat (Raw Floats) -> Zlib Compressed (Lossless & Deterministic)
-    z_hat_np = z_hat.cpu().detach().numpy().astype(np.float32)
-    z_hat_bytes = z_hat_np.tobytes()
-    z_hat_compressed = zlib.compress(z_hat_bytes, level=9)
-    
     # Y-String
     if isinstance(y_strings[0], (bytes, bytearray)):
          y_str_payload = b''.join(y_strings)
     else:
          y_str_payload = b''.join(y_strings[0])
+         
+    # Z-String (AI Compressed)
+    if isinstance(z_strings[0], (bytes, bytearray)):
+         z_str_payload = b''.join(z_strings)
+    else:
+         z_str_payload = b''.join(z_strings[0])
 
-    # 2. 準備 Header (18 bytes) - Removed Version
-    # Magic(3) + ID(1) + Row(1) + Col(1) + H(2) + W(2) + LenY(4) + LenZ(4)
+    # 2. 準備 Header (18 bytes)
     magic = b'TIC'
     h, w = shape
     len_y = len(y_str_payload)
-    len_z = len(z_hat_compressed)
+    len_z = len(z_str_payload)
 
     header = struct.pack('<3sBBBHHII', 
                          magic, img_id, row, col, h, w, len_y, len_z)
 
     # 3. 組合完整封包 (Header + Payloads)
-    packet_content = header + y_str_payload + z_hat_compressed
+    packet_content = header + y_str_payload + z_str_payload
 
     # 4. 計算 CRC32
     crc = zlib.crc32(packet_content) & 0xffffffff
