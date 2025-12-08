@@ -1,0 +1,8 @@
+cd ~/TIC
+python -m venv .venv
+source .venv/bin/activate
+pip install -r examples/requirements.txt
+
+cd examples
+python onlycompress.py "../wang_cropped_4097x3072.png" -p "../1130stcheckpoint_best_loss.pth" 
+python onlydecompress.py "output_satellite/wang_cropped_4097x3072" -p "../1130stcheckpoint_best_loss.pth" --original "../wang_cropped_4097x3072.png"
