@@ -710,40 +710,8 @@ def load_checkpoint(checkpoint_path):
     except:
         pass
 
-    # [FIX] Remap keys for CompressAI version mismatch
-    # Old Checkpoint: entropy_bottleneck._matrix0
-    # New Model:      entropy_bottleneck.matrices.0
-    keys_to_rename = []
-    for k in list(new_state_dict.keys()):
-        if "entropy_bottleneck._matrix" in k:
-            idx = k.split("_matrix")[-1]
-            new_k = k.replace(f"_matrix{idx}", f"matrices.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-        elif "entropy_bottleneck._bias" in k:
-            idx = k.split("_bias")[-1]
-            new_k = k.replace(f"_bias{idx}", f"biases.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-        elif "entropy_bottleneck._factor" in k:
-            idx = k.split("_factor")[-1]
-            new_k = k.replace(f"_factor{idx}", f"factors.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-
     model = SimpleConvStudentModel(N=N, M=M)
-    msg = model.load_state_dict(new_state_dict, strict=False)
-    
-    # [DEBUG] Check for missing keys (Vital for diagnosing 2dB PSNR)
-    if msg is not None:
-        if msg.missing_keys:
-            print("\n" + "="*40)
-            print("[WARNING] MISSING KEYS IN CHECKPOINT:")
-            for k in msg.missing_keys:
-                print(f"  - {k}")
-            print("="*40 + "\n")
-            
-        if msg.unexpected_keys:
-            print(f"[INFO] Unexpected keys in checkpoint: {len(msg.unexpected_keys)}")
-    else:
-        print("[INFO] load_state_dict returned None (Assuming success or old PyTorch version)")
+    model.load_state_dict(new_state_dict, strict=True)
     
     # ==========================================================================
     # 量化策略: 強制統一 Scale Table (Coarse Grid)

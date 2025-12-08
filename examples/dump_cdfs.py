@@ -23,23 +23,8 @@ def dump_cdfs():
     except:
         pass
 
-    # [FIX] Remap keys for CompressAI version mismatch
-    for k in list(new_state_dict.keys()):
-        if "entropy_bottleneck._matrix" in k:
-            idx = k.split("_matrix")[-1]
-            new_k = k.replace(f"_matrix{idx}", f"matrices.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-        elif "entropy_bottleneck._bias" in k:
-            idx = k.split("_bias")[-1]
-            new_k = k.replace(f"_bias{idx}", f"biases.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-        elif "entropy_bottleneck._factor" in k:
-            idx = k.split("_factor")[-1]
-            new_k = k.replace(f"_factor{idx}", f"factors.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-
     model = SimpleConvStudentModel(N=N, M=M)
-    model.load_state_dict(new_state_dict, strict=False)
+    model.load_state_dict(new_state_dict, strict=True)
     
     # [FIX] Force CPU execution for CDF generation to match new runtime flow
     # This ensures the probability tables are bit-exact with the CPU decoding path

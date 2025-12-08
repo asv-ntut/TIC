@@ -744,40 +744,8 @@ def load_checkpoint(checkpoint_path):
             # print(f"{k}: {new_state_dict[k].shape if hasattr(new_state_dict[k], 'shape') else 'No Shape'}")
             pass
 
-    # [FIX] Remap keys for CompressAI version mismatch
-    # Old Checkpoint: entropy_bottleneck._matrix0
-    # New Model:      entropy_bottleneck.matrices.0
-    for k in list(new_state_dict.keys()):
-        if "entropy_bottleneck._matrix" in k:
-            idx = k.split("_matrix")[-1]
-            new_k = k.replace(f"_matrix{idx}", f"matrices.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-        elif "entropy_bottleneck._bias" in k:
-            idx = k.split("_bias")[-1]
-            new_k = k.replace(f"_bias{idx}", f"biases.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-        elif "entropy_bottleneck._factor" in k:
-            idx = k.split("_factor")[-1]
-            new_k = k.replace(f"_factor{idx}", f"factors.{idx}")
-            new_state_dict[new_k] = new_state_dict.pop(k)
-
     model = SimpleConvStudentModel(N=N, M=M)
-    
-    # [DEBUG] Force strict=True to verify if weights are actually loading
-    # If this crashes, it means the keys don't match, explaining the 2dB PSNR.
-    try:
-        print("DEBUG: Attempting load_state_dict with strict=True...")
-        model.load_state_dict(new_state_dict, strict=True)
-        print("DEBUG: Strict load successful! Weights should be correct.")
-    except RuntimeError as e:
-        print("\n" + "!"*60)
-        print("[CRITICAL] STRICT LOAD FAILED! Model weights mismatch!")
-        print("This explains why the output is garbage (random weights).")
-        print(f"Error details:\n{e}")
-        print("!"*60 + "\n")
-        # We allow it to continue with strict=False only to show the user what happens, 
-        # but we now know the root cause.
-        model.load_state_dict(new_state_dict, strict=False)
+    model.load_state_dict(new_state_dict, strict=True)
     
     # ==========================================================================
     # 量化策略: 強制統一 Scale Table (Coarse Grid)
