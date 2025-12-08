@@ -551,17 +551,22 @@ def compress_method(self, x):
     # [Linux/Cross-Platform Fix] Cast to int32 explicit for C++ bind stability
     indexes = indexes.to(dtype=torch.int32).contiguous()
     
-    # DEBUG: Device check
-    print(f"DEBUG: y device={y.device}, scales_hat={scales_hat.device}")
+    # [CPU] Build Indexes & Compress Y
+    indexes = self.gaussian_conditional.build_indexes(scales_hat)
     
-    # STRICT CPU ENFORCEMENT
-    # Force everything to CPU to avoid "Expected all tensors..." error
-    y_cpu = y.detach().cpu()
-    means_hat_cpu = means_hat.detach().cpu()
-    indexes_cpu = indexes.detach().cpu()
+    # [Linux/Cross-Platform Fix] Cast to int32 explicit for C++ bind stability
+    indexes = indexes.to(dtype=torch.int32).contiguous()
     
-    print(f"DEBUG: Compressing Y... y_cpu={y_cpu.device}, means_cpu={means_hat_cpu.device}, idx={indexes_cpu.device}")
+    # STRICT CPU ENFORCEMENT & MEMORY LAYOUT
+    y_cpu = y.detach().cpu().contiguous()
+    means_hat_cpu = means_hat.detach().cpu().contiguous()
+    indexes_cpu = indexes.detach().cpu().contiguous()
     
+    # Safety Check: NaNs in latent space will destroy valid compression
+    if torch.isnan(y_cpu).any():
+        # Fallback or error - raising error to alert user why PSNR is 2dB
+        raise ValueError("FATAL: NaN detected in Latent y. GPU/Model instability likely.")
+        
     y_strings = self.gaussian_conditional.compress(y_cpu, indexes_cpu, means=means_hat_cpu)
     
     # [V10] 回傳原本的 AI 壓縮字串 (z_strings)
