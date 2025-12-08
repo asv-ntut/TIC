@@ -565,9 +565,7 @@ except ImportError:
 # ==============================================================================
 def decompress_method(self, strings, shape):
     assert isinstance(strings, list) and len(strings) == 2
-    # ==========================================================================
-    # 核心修復 V8: 繞過 EntropyBottleneck (Bypass Z-stream)
-    # ==========================================================================
+    # 核心邏輯: 繞過 EntropyBottleneck (Bypass Z-stream)
     # 我們直接使用從封包讀取的 z_hat (Raw Tensor)
     # 這裡的 strings[1] 其實是 z_hat tensor
     z_hat = strings[1]
@@ -576,8 +574,7 @@ def decompress_method(self, strings, shape):
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # V9 量化策略: 強制對齊 Scale Table (0.5, 1.0, 1.5 ...)
-    # 之前的 +0.25 會導致數值落在兩個刻度中間 (e.g. 0.75)，造成跨平台浮點數判定不一致
+    # 量化策略: 強制對齊 Scale Table (0.5, 1.0, 1.5 ...)
     # 改用 round(x * 2) / 2，直接吸附到刻度上 (e.g. 0.75 -> 1.0, 0.74 -> 0.5)
     # 這樣有 +/- 0.25 的超大容錯空間
     scales_hat = torch.round(scales_hat * 2) / 2
@@ -624,21 +621,19 @@ def parse_payload_bytes(payload_data):
 
 from conv2 import get_scale_table
 
-PACKET_VERSION = 8
-
 def load_satellite_packet(bin_path):
     """
-    讀取封包: Header + Y_Strings + Z_Hat (Raw) + CRC32
+    讀取封包: Header + Y_Strings + Z_Hat (Compressed) + CRC32
     Format (Little Endian <):
-    [Magic:3][Ver:1][ID:1][Row:1][Col:1][H:2][W:2][LenY:4][LenZ:4] ... [CRC:4]
+    [Magic:3][ID:1][Row:1][Col:1][H:2][W:2][LenY:4][LenZ:4] ... [CRC:4]
     """
     import numpy as np
     try:
         with open(bin_path, "rb") as f:
             data = f.read()
 
-        # 最小長度檢查: Header(19) + CRC(4) = 23 bytes
-        if len(data) < 23: 
+        # 最小長度檢查: Header(18) + CRC(4) = 22 bytes
+        if len(data) < 22: 
             print(f"[Error] File too small: {os.path.basename(bin_path)}")
             return None
 
@@ -651,25 +646,20 @@ def load_satellite_packet(bin_path):
             print(f"[Corrupt] CRC Fail: {os.path.basename(bin_path)}")
             return None
 
-        # 2. Parse Header (19 bytes)
-        # Magic(3) + Ver(1) + ID(1) + Row(1) + Col(1) + H(2) + W(2) + LenY(4) + LenZ(4)
-        header_size = 19
+        # 2. Parse Header (18 bytes) - Removed Version
+        # Magic(3) + ID(1) + Row(1) + Col(1) + H(2) + W(2) + LenY(4) + LenZ(4)
+        header_size = 18
         header_data = data[:header_size]
         
-        magic, version, img_id, row, col, h, w, len_y, len_z = struct.unpack('<3sBBBBHHII', header_data)
+        magic, img_id, row, col, h, w, len_y, len_z = struct.unpack('<3sBBBHHII', header_data)
         
         # Magic Check
         if magic != b'TIC':
             print(f"[Error] Invalid Magic: {magic}")
             return None
             
-        # Version Check
-        if version != PACKET_VERSION:
-            print(f"[Error] Version Mismatch: File={version}, Decoder={PACKET_VERSION}")
-            return None
-
         # 3. Parse Payloads
-        # Payload starts at 19
+        # Payload starts at 18
         cursor = header_size
         
         if len(data) < cursor + len_y + len_z + 4:
@@ -773,7 +763,7 @@ def load_checkpoint(checkpoint_path):
     model.load_state_dict(new_state_dict, strict=False)
     
     # ==========================================================================
-    # 核心修復 V6: 強制統一 Scale Table (Coarse Grid)
+    # 量化策略: 強制統一 Scale Table (Coarse Grid)
     # ==========================================================================
     # 使用粗刻度 0.5 ~ 32.0 (共 64 階)
     scale_table = torch.linspace(0.5, 32.0, 64)
@@ -783,14 +773,14 @@ def load_checkpoint(checkpoint_path):
     model.update(force=True)
     
     # ==========================================================================
-    # 核心修復 V5/V7: 強制統一 EntropyBottleneck CDFs & Medians
+    # 強制統一 EntropyBottleneck CDFs & Medians
     # ==========================================================================
     try:
         from fixed_cdfs import FIXED_EB_CDF, FIXED_EB_OFFSET, FIXED_EB_LENGTH, FIXED_EB_MEDIANS
         eb = model.entropy_bottleneck
         device = eb._quantized_cdf.device
         
-        # 1. 覆蓋 CDF, Offset, Length (V5)
+        # 1. 覆蓋 CDF, Offset, Length
         eb._quantized_cdf.resize_(torch.tensor(FIXED_EB_CDF).shape).copy_(
             torch.tensor(FIXED_EB_CDF, device=device, dtype=torch.int32))
         eb._offset.resize_(torch.tensor(FIXED_EB_OFFSET).shape).copy_(
@@ -798,11 +788,11 @@ def load_checkpoint(checkpoint_path):
         eb._cdf_length.resize_(torch.tensor(FIXED_EB_LENGTH).shape).copy_(
             torch.tensor(FIXED_EB_LENGTH, device=device, dtype=torch.int32))
             
-        # 2. 覆蓋 Quantiles/Medians (V7)
+        # 2. 覆蓋 Quantiles/Medians
         fixed_medians = torch.tensor(FIXED_EB_MEDIANS, device=device)
         eb.quantiles.data[:, 0, 1] = fixed_medians.squeeze()
             
-        print("[INFO] EntropyBottleneck CDFs & Medians overwritten (V7 Fix).")
+        print("[INFO] EntropyBottleneck CDFs & Medians overwritten.")
     except ImportError:
         print("[WARNING] fixed_cdfs.py not found! EntropyBottleneck might be non-deterministic.")
     except Exception as e:
