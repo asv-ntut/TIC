@@ -525,7 +525,7 @@ def compress_method(self, x):
     y = self.g_a(x)
     z = self.h_a(y)
     
-    # Force CPU for all critical components
+    # Force CPU for entropy coding (cross-platform determinism)
     self.entropy_bottleneck.cpu()
     self.h_s.cpu()
     self.gaussian_conditional.cpu()
@@ -534,46 +534,22 @@ def compress_method(self, x):
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
     
-    # [DEBUG] Only print once
-    if not hasattr(self, '_eb_debug_printed') or not self._eb_debug_printed:
-        eb = self.entropy_bottleneck
-        medians = eb.quantiles[:, 0, 1]
-        print(f"[ENC] eb._quantized_cdf sum: {eb._quantized_cdf.sum().item()}")
-        print(f"[ENC] eb._offset sum: {eb._offset.sum().item()}")
-        print(f"[ENC] medians sum: {medians.sum().item():.6f}")
-        print(f"[ENC] z_strings[0] len: {len(z_strings[0])}")
-        self._eb_debug_printed = True
-    
     gaussian_params = self.h_s(z_hat)
-    scales_hat_raw, means_hat_raw = gaussian_params.chunk(2, 1)
+    scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
     # [V11] Cross-Platform Deterministic Quantization
-    scales_clamped = scales_hat_raw.clamp(0.5, 32.0)
+    scales_clamped = scales_hat.clamp(0.5, 32.0)
     scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64).clamp(0, 63)
     scales_hat = 0.5 + scale_indices.float() * 0.5
-    means_hat = torch.floor(means_hat_raw * 10 + 0.5) / 10
+    means_hat = torch.floor(means_hat * 10 + 0.5) / 10
     
-    indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    indexes = indexes.to(dtype=torch.int32).contiguous()
-    
-    # [DEBUG] Comprehensive checksums (only first patch)
-    if not hasattr(self, '_debug_printed') or not self._debug_printed:
-        print(f"[ENC] z_hat sum: {z_hat.sum().item():.6f}")
-        print(f"[ENC] scales_hat_raw sum: {scales_hat_raw.sum().item():.6f}")
-        print(f"[ENC] scale_indices sum: {scale_indices.sum().item()}")
-        print(f"[ENC] means_hat sum: {means_hat.sum().item():.6f}")
-        print(f"[ENC] indexes sum: {indexes.sum().item()}")
-        print(f"[ENC] gc._quantized_cdf[0,:5]: {self.gaussian_conditional._quantized_cdf[0,:5].tolist()}")
-        self._debug_printed = True
-    
+    indexes = self.gaussian_conditional.build_indexes(scales_hat).to(torch.int32).contiguous()
     y_cpu = y.detach().cpu().contiguous()
-    means_hat_cpu = means_hat.detach().cpu().contiguous()
-    indexes_cpu = indexes.detach().cpu().contiguous()
     
     if torch.isnan(y_cpu).any():
         raise ValueError("FATAL: NaN detected in Latent y.")
         
-    y_strings = self.gaussian_conditional.compress(y_cpu, indexes_cpu, means=means_hat_cpu)
+    y_strings = self.gaussian_conditional.compress(y_cpu, indexes, means=means_hat.contiguous())
     
     return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 

@@ -561,12 +561,12 @@ except ImportError:
 
 
 # ==============================================================================
-# Monkey Patching: 注入解壓縮方法 (Hybrid CPU/GPU Mode)
+# Monkey Patching: 注入解壓縮方法
 # ==============================================================================
 def decompress_method(self, strings, shape):
     assert isinstance(strings, list) and len(strings) == 2
     
-    # Force CPU for all critical components
+    # Force CPU for entropy coding (cross-platform determinism)
     self.entropy_bottleneck.cpu()
     self.h_s.cpu()
     self.gaussian_conditional.cpu()
@@ -574,45 +574,23 @@ def decompress_method(self, strings, shape):
     z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
     if z_hat.device.type != 'cpu':
         z_hat = z_hat.cpu()
-    
-    # [DEBUG] Only print once
-    if not hasattr(self, '_eb_debug_printed') or not self._eb_debug_printed:
-        eb = self.entropy_bottleneck
-        medians = eb.quantiles[:, 0, 1]
-        print(f"[DEC] eb._quantized_cdf sum: {eb._quantized_cdf.sum().item()}")
-        print(f"[DEC] eb._offset sum: {eb._offset.sum().item()}")
-        print(f"[DEC] medians sum: {medians.sum().item():.6f}")
-        print(f"[DEC] z_strings[0] len: {len(strings[1][0])}")
-        self._eb_debug_printed = True
         
     gaussian_params = self.h_s(z_hat)
-    scales_hat_raw, means_hat_raw = gaussian_params.chunk(2, 1)
+    scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
     # [V11] Cross-Platform Deterministic Quantization
-    scales_clamped = scales_hat_raw.clamp(0.5, 32.0)
+    scales_clamped = scales_hat.clamp(0.5, 32.0)
     scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64).clamp(0, 63)
     scales_hat = 0.5 + scale_indices.float() * 0.5
-    means_hat = torch.floor(means_hat_raw * 10 + 0.5) / 10
+    means_hat = torch.floor(means_hat * 10 + 0.5) / 10
     
-    indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    indexes = indexes.to(dtype=torch.int32).contiguous()
+    indexes = self.gaussian_conditional.build_indexes(scales_hat).to(torch.int32).contiguous()
     means_hat = means_hat.contiguous()
-    
-    # [DEBUG] Comprehensive checksums (only first patch)
-    if not hasattr(self, '_debug_printed') or not self._debug_printed:
-        print(f"[DEC] z_hat sum: {z_hat.sum().item():.6f}")
-        print(f"[DEC] scales_hat_raw sum: {scales_hat_raw.sum().item():.6f}")
-        print(f"[DEC] scale_indices sum: {scale_indices.sum().item()}")
-        print(f"[DEC] means_hat sum: {means_hat.sum().item():.6f}")
-        print(f"[DEC] indexes sum: {indexes.sum().item()}")
-        print(f"[DEC] gc._quantized_cdf[0,:5]: {self.gaussian_conditional._quantized_cdf[0,:5].tolist()}")
-        self._debug_printed = True
     
     if indexes.max().item() >= 64 or indexes.min().item() < 0:
         indexes = indexes.clamp(0, 63)
         
-    # Decompress Y on CPU
-    y_hat = None
+    # Decompress Y on CPU (single thread for stability)
     try:
         prev_threads = torch.get_num_threads()
         torch.set_num_threads(1)
@@ -622,15 +600,10 @@ def decompress_method(self, strings, shape):
         print(f"[ERROR] Decompression Failed: {e}")
         y_hat = torch.zeros_like(means_hat)
 
-    # 確保無 NaN
     if torch.isnan(y_hat).any():
-        print("!! WARNING !! NaN detected in y_hat. Replacing with zeros.")
         y_hat = torch.nan_to_num(y_hat)
         
-    # 2. Main Transform (GPU)
-    # 將解碼完的 Y 移回 GPU 以進行 g_s
-    
-    # 取得 GPU device from g_s parameters
+    # Move to GPU for g_s
     device = next(self.g_s.parameters()).device
     y_hat = y_hat.to(device)
     
@@ -787,13 +760,6 @@ def load_checkpoint(checkpoint_path):
         M = new_state_dict[keys[-1]].size(0)
     except:
         pass
-    
-    # DEBUG: Print keys related to gaussian_conditional
-    print("\n[DEBUG] Checkpoint Keys (GaussianConditional):")
-    for k in new_state_dict.keys():
-        if "gaussian_conditional" in k:
-            # print(f"{k}: {new_state_dict[k].shape if hasattr(new_state_dict[k], 'shape') else 'No Shape'}")
-            pass
 
     model = SimpleConvStudentModel(N=N, M=M)
     model.load_state_dict(new_state_dict, strict=True)
