@@ -744,7 +744,14 @@ def load_checkpoint(checkpoint_path):
             print(f"{k}: {new_state_dict[k].shape if hasattr(new_state_dict[k], 'shape') else 'No Shape'}")
 
     model = SimpleConvStudentModel(N=N, M=M)
-    model.load_state_dict(new_state_dict, strict=False)
+    msg = model.load_state_dict(new_state_dict, strict=False)
+    
+    if msg.missing_keys:
+        print("\n" + "="*40)
+        print("[WARNING] MISSING KEYS IN DECODER:")
+        for k in msg.missing_keys:
+            print(f"  - {k}")
+        print("="*40 + "\n")
     
     # ==========================================================================
     # 量化策略: 強制統一 Scale Table (Coarse Grid)

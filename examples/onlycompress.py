@@ -711,7 +711,18 @@ def load_checkpoint(checkpoint_path):
         pass
 
     model = SimpleConvStudentModel(N=N, M=M)
-    model.load_state_dict(new_state_dict, strict=False)
+    msg = model.load_state_dict(new_state_dict, strict=False)
+    
+    # [DEBUG] Check for missing keys (Vital for diagnosing 2dB PSNR)
+    if msg.missing_keys:
+        print("\n" + "="*40)
+        print("[WARNING] MISSING KEYS IN CHECKPOINT:")
+        for k in msg.missing_keys:
+            print(f"  - {k}")
+        print("="*40 + "\n")
+        
+    if msg.unexpected_keys:
+        print(f"[INFO] Unexpected keys in checkpoint: {len(msg.unexpected_keys)}")
     
     # ==========================================================================
     # 量化策略: 強制統一 Scale Table (Coarse Grid)
