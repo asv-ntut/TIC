@@ -575,10 +575,15 @@ def decompress_method(self, strings, shape):
     if z_hat.device.type != 'cpu':
         z_hat = z_hat.cpu()
     
-    # [DEBUG] eb CDF checksum
-    eb = self.entropy_bottleneck
-    print(f"[DEC] eb._quantized_cdf sum: {eb._quantized_cdf.sum().item()}")
-    print(f"[DEC] eb._offset sum: {eb._offset.sum().item()}")
+    # [DEBUG] Only print once
+    if not hasattr(self, '_eb_debug_printed') or not self._eb_debug_printed:
+        eb = self.entropy_bottleneck
+        medians = eb.quantiles[:, 0, 1]
+        print(f"[DEC] eb._quantized_cdf sum: {eb._quantized_cdf.sum().item()}")
+        print(f"[DEC] eb._offset sum: {eb._offset.sum().item()}")
+        print(f"[DEC] medians sum: {medians.sum().item():.6f}")
+        print(f"[DEC] z_strings[0] len: {len(strings[1][0])}")
+        self._eb_debug_printed = True
         
     gaussian_params = self.h_s(z_hat)
     scales_hat_raw, means_hat_raw = gaussian_params.chunk(2, 1)

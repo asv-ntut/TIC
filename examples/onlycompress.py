@@ -534,10 +534,15 @@ def compress_method(self, x):
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
     
-    # [DEBUG] eb CDF checksum
-    eb = self.entropy_bottleneck
-    print(f"[ENC] eb._quantized_cdf sum: {eb._quantized_cdf.sum().item()}")
-    print(f"[ENC] eb._offset sum: {eb._offset.sum().item()}")
+    # [DEBUG] Only print once
+    if not hasattr(self, '_eb_debug_printed') or not self._eb_debug_printed:
+        eb = self.entropy_bottleneck
+        medians = eb.quantiles[:, 0, 1]
+        print(f"[ENC] eb._quantized_cdf sum: {eb._quantized_cdf.sum().item()}")
+        print(f"[ENC] eb._offset sum: {eb._offset.sum().item()}")
+        print(f"[ENC] medians sum: {medians.sum().item():.6f}")
+        print(f"[ENC] z_strings[0] len: {len(z_strings[0])}")
+        self._eb_debug_printed = True
     
     gaussian_params = self.h_s(z_hat)
     scales_hat_raw, means_hat_raw = gaussian_params.chunk(2, 1)
