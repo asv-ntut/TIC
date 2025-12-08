@@ -73,3 +73,4 @@ venv.bak/
 *pth.tar
 wandb/
 output_satellite/
+fixed_cdfs.py

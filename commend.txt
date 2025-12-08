@@ -4,7 +4,14 @@ source .venv/bin/activate
 pip install -r examples/requirements.txt
 pip install -e .
 
+板子上執行以下指令
+pip install -e . --no-build-isolation
+
 cd examples
+
+解壓縮端執行
 python dump_cdfs.py
+確認TIC/examples/fixed_cdfs.py與壓縮端相同
+
 python onlycompress.py "../wang_cropped_4097x3072.png" -p "../1130stcheckpoint_best_loss.pth" 
 python onlydecompress.py "output_satellite/wang_cropped_4097x3072" -p "../1130stcheckpoint_best_loss.pth" --original "../wang_cropped_4097x3072.png"
