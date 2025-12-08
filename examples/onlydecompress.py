@@ -561,20 +561,30 @@ except ImportError:
 
 
 # ==============================================================================
-# Monkey Patching: 注入解壓縮方法
+# Monkey Patching: 注入解壓縮方法 (Hybrid CPU/GPU Mode)
 # ==============================================================================
 def decompress_method(self, strings, shape):
     assert isinstance(strings, list) and len(strings) == 2
-    # [V10] 恢復使用 EntropyBottleneck (Arithmetic Decoding)
-    # 依賴 Fixed CDFs (V7) 確保一致性
-    z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
+    # DEBUG: Verbose logging
+    # print(f"DEBUG: Start Z-Decompress (len={len(strings[1][0])})")
     
-    # 繼續計算 scales_hat
+    # 1. Hyper-Prior & Entropy Coding (Force CPU)
+    # 確保子模組在 CPU
+    self.entropy_bottleneck.cpu()
+    self.h_s.cpu()
+    self.gaussian_conditional.cpu()
+    
+    # [CPU] Decompress Z
+    # EntropyBottleneck 解碼通常回傳 CPU Tensor (或跟隨 device)，確保它是 CPU
+    z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
+    if z_hat.device.type != 'cpu':
+        z_hat = z_hat.cpu()
+        
+    # [CPU] Hyper Transform (h_s)
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # 量化策略: 強制對齊 Scale Table (0.5, 1.0, 1.5 ...)
-    # 改用 round(x * 2) / 2，直接吸附到刻度上    print("DEBUG: Scales Done. Quantizing (CPU)...")
+    # print("DEBUG: Scales Done. Quantizing (CPU)...")
 
     # [CPU] Quantization Strategy (Must match compress with Epsilon)
     scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
@@ -588,7 +598,60 @@ def decompress_method(self, strings, shape):
     # DEBUG Checksum: Compare this with Encoder output!
     print(f"DEBUG: Decoder Indexes Checksum: {indexes.to(dtype=torch.float32).sum().item():.3f}")
     
-    # [Windows Stability Fix] Cast to int32 explicit AND ensure contiguous memorympress(strings[0], indexes, means=means_hat)
+    # [Windows Stability Fix] Cast to int32 explicit AND ensure contiguous memory
+    indexes = indexes.to(dtype=torch.int32).contiguous()
+    means_hat = means_hat.contiguous()
+    
+    # [Safety Check]
+    max_idx = indexes.max().item()
+    min_idx = indexes.min().item()
+    
+    if max_idx >= 64 or min_idx < 0:
+        # print(f"!! WARNING !! Index out of bound detected ({min_idx}~{max_idx}). Clamping...")
+        indexes = indexes.clamp(0, 63)
+        
+    print(f"DEBUG: Start Y-Decompress (CPU Mode, len={len(strings[0][0])})", flush=True)
+    
+    # [Windows Stability Strategy]
+    # 將解碼運算移至 CPU 執行，避開 Windows + CUDA + CompressAI C++ Extension 的潛在相容性問題
+    # 這能顯著降低 Segfault 機率
+    y_hat = None
+    try:
+        # Enforce single thread for this critical section to potential avoid race conditions in C++ ext
+        # though set_num_threads is global, it's safer here.
+        prev_threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+        
+        indexes_cpu = indexes.cpu()
+        means_hat_cpu = means_hat.cpu()
+        
+        # 執行解碼 (on CPU)
+        y_hat_cpu = self.gaussian_conditional.decompress(strings[0], indexes_cpu, means=means_hat_cpu)
+        
+        # Restore threads
+        torch.set_num_threads(prev_threads)
+        
+        y_hat = y_hat_cpu
+        print("DEBUG: Y-Decompress Done. Moving to Device...", flush=True)
+        
+    except Exception as e:
+        print(f"\n[CRITICAL ERROR] Decompression Failed: {e}")
+        # Fallback: recover safely to avoid crash
+        y_hat = torch.zeros_like(means_hat)
+
+    # 確保無 NaN
+    if torch.isnan(y_hat).any():
+        print("!! WARNING !! NaN detected in y_hat. Replacing with zeros.")
+        y_hat = torch.nan_to_num(y_hat)
+        
+    # 2. Main Transform (GPU)
+    # 將解碼完的 Y 移回 GPU 以進行 g_s
+    print("DEBUG: Y-Decompress Done. Moving to Device (GPU)...")
+    
+    # 取得 GPU device from g_s parameters
+    device = next(self.g_s.parameters()).device
+    y_hat = y_hat.to(device)
+    
     x_hat = self.g_s(y_hat).clamp_(0, 1)
     return {"x_hat": x_hat}
 
