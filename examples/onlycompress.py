@@ -545,8 +545,16 @@ def compress_method(self, x):
     
     means_hat = torch.round(means_hat * 100) / 100
     
+    # [CPU] Build Indexes & Compress Y
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    y_strings = self.gaussian_conditional.compress(y, indexes, means=means_hat)
+    
+    # [Linux/Cross-Platform Fix] Cast to int32 explicit for C++ bind stability
+    indexes = indexes.to(dtype=torch.int32).contiguous()
+    
+    # Move y to CPU for compression if it's on GPU, as C++ bindings might expect CPU tensors
+    y_cpu = y.cpu() if y.is_cuda else y
+    
+    y_strings = self.gaussian_conditional.compress(y_cpu, indexes, means=means_hat)
     
     # [V10] 回傳原本的 AI 壓縮字串 (z_strings)
     # 依賴 Fixed CDFs (V7) + V9 Scale Fix 來確保解碼一致性
