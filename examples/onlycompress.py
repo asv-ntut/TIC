@@ -551,10 +551,18 @@ def compress_method(self, x):
     # [Linux/Cross-Platform Fix] Cast to int32 explicit for C++ bind stability
     indexes = indexes.to(dtype=torch.int32).contiguous()
     
-    # Move y to CPU for compression if it's on GPU, as C++ bindings might expect CPU tensors
-    y_cpu = y.cpu() if y.is_cuda else y
+    # DEBUG: Device check
+    print(f"DEBUG: y device={y.device}, scales_hat={scales_hat.device}")
     
-    y_strings = self.gaussian_conditional.compress(y_cpu, indexes, means=means_hat)
+    # STRICT CPU ENFORCEMENT
+    # Force everything to CPU to avoid "Expected all tensors..." error
+    y_cpu = y.detach().cpu()
+    means_hat_cpu = means_hat.detach().cpu()
+    indexes_cpu = indexes.detach().cpu()
+    
+    print(f"DEBUG: Compressing Y... y_cpu={y_cpu.device}, means_cpu={means_hat_cpu.device}, idx={indexes_cpu.device}")
+    
+    y_strings = self.gaussian_conditional.compress(y_cpu, indexes_cpu, means=means_hat_cpu)
     
     # [V10] 回傳原本的 AI 壓縮字串 (z_strings)
     # 依賴 Fixed CDFs (V7) + V9 Scale Fix 來確保解碼一致性
