@@ -26,7 +26,11 @@ def dump_cdfs():
     model = SimpleConvStudentModel(N=N, M=M)
     model.load_state_dict(new_state_dict, strict=False)
     
-    # Force update to generate CDFs
+    # [FIX] Force CPU execution for CDF generation to match new runtime flow
+    # This ensures the probability tables are bit-exact with the CPU decoding path
+    model = model.to('cpu')
+    
+    # Force update to generate CDFs (on CPU)
     model.update(force=True)
     
     eb = model.entropy_bottleneck
