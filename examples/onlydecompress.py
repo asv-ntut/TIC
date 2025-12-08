@@ -741,6 +741,9 @@ def load_checkpoint(checkpoint_path):
     print("\n[DEBUG] Checkpoint Keys (GaussianConditional):")
     for k in new_state_dict.keys():
         if "gaussian_conditional" in k:
+            # print(f"{k}: {new_state_dict[k].shape if hasattr(new_state_dict[k], 'shape') else 'No Shape'}")
+            pass
+
     # [FIX] Remap keys for CompressAI version mismatch
     # Old Checkpoint: entropy_bottleneck._matrix0
     # New Model:      entropy_bottleneck.matrices.0

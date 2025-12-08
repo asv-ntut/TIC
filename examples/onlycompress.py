@@ -708,6 +708,8 @@ def load_checkpoint(checkpoint_path):
         keys = sorted([k for k in new_state_dict.keys() if 'g_a' in k and 'weight' in k])
         M = new_state_dict[keys[-1]].size(0)
     except:
+        pass
+
     # [FIX] Remap keys for CompressAI version mismatch
     # Old Checkpoint: entropy_bottleneck._matrix0
     # New Model:      entropy_bottleneck.matrices.0
