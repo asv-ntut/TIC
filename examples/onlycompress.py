@@ -801,7 +801,8 @@ def main():
 
     # 載入模型
     model = load_checkpoint(args.checkpoint).to(device)
-    model.update(force=True)
+    # [CRITICAL] DO NOT call model.update() here! It will overwrite the fixed_cdfs loaded in load_checkpoint
+    # model.update(force=True)  # REMOVED - This was causing z_hat mismatch across platforms
 
     # 準備路徑
     filename = os.path.basename(args.input_path)

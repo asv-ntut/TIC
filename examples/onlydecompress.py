@@ -901,7 +901,8 @@ def main():
 
     # 2. 載入模型
     model = load_checkpoint(args.checkpoint).to(device)
-    model.update(force=True)
+    # [CRITICAL] DO NOT call model.update() here! It will overwrite the fixed_cdfs loaded in load_checkpoint
+    # model.update(force=True)  # REMOVED - This was causing z_hat mismatch across platforms
 
     # 3. 預掃描：決定畫布大小
     # 因為沒有檔名告訴我們大小，我們必須掃描有效封包的 header 來找出最大的 row/col
