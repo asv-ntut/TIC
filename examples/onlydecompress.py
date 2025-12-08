@@ -746,7 +746,7 @@ def load_checkpoint(checkpoint_path):
     model = SimpleConvStudentModel(N=N, M=M)
     msg = model.load_state_dict(new_state_dict, strict=False)
     
-    if msg.missing_keys:
+    if msg is not None and msg.missing_keys:
         print("\n" + "="*40)
         print("[WARNING] MISSING KEYS IN DECODER:")
         for k in msg.missing_keys:
