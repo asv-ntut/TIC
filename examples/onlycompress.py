@@ -743,6 +743,11 @@ def load_checkpoint(checkpoint_path):
         # 1. 覆蓋 CDF, Offset, Length
         eb._quantized_cdf.resize_(torch.tensor(FIXED_EB_CDF).shape).copy_(
             torch.tensor(FIXED_EB_CDF, device=device, dtype=torch.int32))
+            
+        # DEBUG: Verify CDF Checksum
+        cdf_sum = torch.tensor(FIXED_EB_CDF, dtype=torch.float32).sum().item()
+        print(f"[INFO] FIXED_EB_CDF loaded. Checksum: {cdf_sum:.3f}")
+        
         eb._offset.resize_(torch.tensor(FIXED_EB_OFFSET).shape).copy_(
             torch.tensor(FIXED_EB_OFFSET, device=device, dtype=torch.int32))
         eb._cdf_length.resize_(torch.tensor(FIXED_EB_LENGTH).shape).copy_(
