@@ -741,7 +741,22 @@ def load_checkpoint(checkpoint_path):
     print("\n[DEBUG] Checkpoint Keys (GaussianConditional):")
     for k in new_state_dict.keys():
         if "gaussian_conditional" in k:
-            print(f"{k}: {new_state_dict[k].shape if hasattr(new_state_dict[k], 'shape') else 'No Shape'}")
+    # [FIX] Remap keys for CompressAI version mismatch
+    # Old Checkpoint: entropy_bottleneck._matrix0
+    # New Model:      entropy_bottleneck.matrices.0
+    for k in list(new_state_dict.keys()):
+        if "entropy_bottleneck._matrix" in k:
+            idx = k.split("_matrix")[-1]
+            new_k = k.replace(f"_matrix{idx}", f"matrices.{idx}")
+            new_state_dict[new_k] = new_state_dict.pop(k)
+        elif "entropy_bottleneck._bias" in k:
+            idx = k.split("_bias")[-1]
+            new_k = k.replace(f"_bias{idx}", f"biases.{idx}")
+            new_state_dict[new_k] = new_state_dict.pop(k)
+        elif "entropy_bottleneck._factor" in k:
+            idx = k.split("_factor")[-1]
+            new_k = k.replace(f"_factor{idx}", f"factors.{idx}")
+            new_state_dict[new_k] = new_state_dict.pop(k)
 
     model = SimpleConvStudentModel(N=N, M=M)
     
