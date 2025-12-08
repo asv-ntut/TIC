@@ -722,26 +722,36 @@ def load_checkpoint(checkpoint_path):
     # ==========================================================================
     try:
         from fixed_cdfs import FIXED_EB_CDF, FIXED_EB_OFFSET, FIXED_EB_LENGTH, FIXED_EB_MEDIANS
+        from fixed_cdfs import FIXED_GC_CDF, FIXED_GC_OFFSET, FIXED_GC_LENGTH, FIXED_GC_SCALE_TABLE
+        
         eb = model.entropy_bottleneck
+        gc = model.gaussian_conditional
         device = eb._quantized_cdf.device
         
-        # 1. 覆蓋 CDF, Offset, Length
+        # EntropyBottleneck CDFs
         eb._quantized_cdf.resize_(torch.tensor(FIXED_EB_CDF).shape).copy_(
             torch.tensor(FIXED_EB_CDF, device=device, dtype=torch.int32))
         eb._offset.resize_(torch.tensor(FIXED_EB_OFFSET).shape).copy_(
             torch.tensor(FIXED_EB_OFFSET, device=device, dtype=torch.int32))
         eb._cdf_length.resize_(torch.tensor(FIXED_EB_LENGTH).shape).copy_(
             torch.tensor(FIXED_EB_LENGTH, device=device, dtype=torch.int32))
-            
-        # 2. 覆蓋 Quantiles/Medians
         fixed_medians = torch.tensor(FIXED_EB_MEDIANS, device=device)
         eb.quantiles.data[:, 0, 1] = fixed_medians.squeeze()
+        
+        # GaussianConditional CDFs
+        gc._quantized_cdf.resize_(torch.tensor(FIXED_GC_CDF).shape).copy_(
+            torch.tensor(FIXED_GC_CDF, device=device, dtype=torch.int32))
+        gc._offset.resize_(torch.tensor(FIXED_GC_OFFSET).shape).copy_(
+            torch.tensor(FIXED_GC_OFFSET, device=device, dtype=torch.int32))
+        gc._cdf_length.resize_(torch.tensor(FIXED_GC_LENGTH).shape).copy_(
+            torch.tensor(FIXED_GC_LENGTH, device=device, dtype=torch.int32))
+        gc.scale_table = torch.tensor(FIXED_GC_SCALE_TABLE, device=device)
             
-        print("[INFO] EntropyBottleneck CDFs & Medians overwritten.")
+        print("[INFO] EntropyBottleneck & GaussianConditional CDFs overwritten.")
     except ImportError:
-        print("[WARNING] fixed_cdfs.py not found! EntropyBottleneck might be non-deterministic.")
+        print("[WARNING] fixed_cdfs.py not found or incomplete!")
     except Exception as e:
-        print(f"[WARNING] Failed to overwrite EntropyBottleneck CDFs: {e}")
+        print(f"[WARNING] Failed to overwrite CDFs: {e}")
     # ==========================================================================
 
     return model.eval()

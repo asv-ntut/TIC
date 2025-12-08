@@ -34,15 +34,24 @@ def dump_cdfs():
     model.update(force=True)
     
     eb = model.entropy_bottleneck
+    gc = model.gaussian_conditional
     
     medians = eb._get_medians().detach()
     
     with open("fixed_cdfs.py", "w") as f:
+        # EntropyBottleneck CDFs
         f.write(f"FIXED_EB_CDF = {eb._quantized_cdf.tolist()}\n")
         f.write(f"FIXED_EB_OFFSET = {eb._offset.tolist()}\n")
         f.write(f"FIXED_EB_LENGTH = {eb._cdf_length.tolist()}\n")
         f.write(f"FIXED_EB_MEDIANS = {medians.tolist()}\n")
-    print("Successfully wrote fixed_cdfs.py")
+        
+        # GaussianConditional CDFs
+        f.write(f"FIXED_GC_CDF = {gc._quantized_cdf.tolist()}\n")
+        f.write(f"FIXED_GC_OFFSET = {gc._offset.tolist()}\n")
+        f.write(f"FIXED_GC_LENGTH = {gc._cdf_length.tolist()}\n")
+        f.write(f"FIXED_GC_SCALE_TABLE = {gc.scale_table.tolist()}\n")
+        
+    print("Successfully wrote fixed_cdfs.py (EntropyBottleneck + GaussianConditional)")
 
 if __name__ == "__main__":
     dump_cdfs()
