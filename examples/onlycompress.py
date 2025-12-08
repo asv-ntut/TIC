@@ -524,37 +524,37 @@ except ImportError:
 def compress_method(self, x):
     y = self.g_a(x)
     z = self.h_a(y)
-    # 核心邏輯: 繞過 EntropyBottleneck (Bypass Z-stream)
-    # 為了徹底排除 EntropyBottleneck (Arithmetic Coding) 跨平台解碼不一致的問題，
-    # 我們不使用 model.entropy_bottleneck.compress 產生的字串。
-    # 而是直接取出 z_hat (Tensor)，稍後在 save_satellite_packet 中使用 zlib 進行無損壓縮。
-    # 強制執行 compress -> decompress 流程是為了確保 z_hat 數值包含 medians 修正，與解碼端一致。
     
-    # [Deterministic Fix] Force Critical Components to CPU
-    # This ensures that h_s (Conv2d) runs on CPU, matching the Decoder's behavior.
-    # GPU (CUDA) vs CPU floating point drift in h_s is the root cause of PSNR degradation (9dB).
+    # Force CPU for all critical components
     self.entropy_bottleneck.cpu()
     self.h_s.cpu()
     self.gaussian_conditional.cpu()
-
-    # Move z to CPU for processing
     z = z.cpu()
     
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
     
     gaussian_params = self.h_s(z_hat)
-    scales_hat, means_hat = gaussian_params.chunk(2, 1)
+    scales_hat_raw, means_hat_raw = gaussian_params.chunk(2, 1)
 
     # [V11] Cross-Platform Deterministic Quantization
-    # Scale Table: [0.5, 1.0, 1.5, ..., 32.0] (64 levels)
-    scales_clamped = scales_hat.clamp(0.5, 32.0)
+    scales_clamped = scales_hat_raw.clamp(0.5, 32.0)
     scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64).clamp(0, 63)
     scales_hat = 0.5 + scale_indices.float() * 0.5
-    means_hat = torch.floor(means_hat * 10 + 0.5) / 10
+    means_hat = torch.floor(means_hat_raw * 10 + 0.5) / 10
     
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
     indexes = indexes.to(dtype=torch.int32).contiguous()
+    
+    # [DEBUG] Comprehensive checksums (only first patch)
+    if not hasattr(self, '_debug_printed') or not self._debug_printed:
+        print(f"[ENC] z_hat sum: {z_hat.sum().item():.6f}")
+        print(f"[ENC] scales_hat_raw sum: {scales_hat_raw.sum().item():.6f}")
+        print(f"[ENC] scale_indices sum: {scale_indices.sum().item()}")
+        print(f"[ENC] means_hat sum: {means_hat.sum().item():.6f}")
+        print(f"[ENC] indexes sum: {indexes.sum().item()}")
+        print(f"[ENC] gc._quantized_cdf[0,:5]: {self.gaussian_conditional._quantized_cdf[0,:5].tolist()}")
+        self._debug_printed = True
     
     y_cpu = y.detach().cpu().contiguous()
     means_hat_cpu = means_hat.detach().cpu().contiguous()

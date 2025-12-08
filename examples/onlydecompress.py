@@ -565,34 +565,38 @@ except ImportError:
 # ==============================================================================
 def decompress_method(self, strings, shape):
     assert isinstance(strings, list) and len(strings) == 2
-    # DEBUG: Verbose logging
-    # print(f"DEBUG: Start Z-Decompress (len={len(strings[1][0])})")
     
-    # 1. Hyper-Prior & Entropy Coding (Force CPU)
-    # 確保子模組在 CPU
+    # Force CPU for all critical components
     self.entropy_bottleneck.cpu()
     self.h_s.cpu()
     self.gaussian_conditional.cpu()
     
-    # [CPU] Decompress Z
     z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
     if z_hat.device.type != 'cpu':
         z_hat = z_hat.cpu()
         
-    # [CPU] Hyper Transform (h_s)
     gaussian_params = self.h_s(z_hat)
-    scales_hat, means_hat = gaussian_params.chunk(2, 1)
+    scales_hat_raw, means_hat_raw = gaussian_params.chunk(2, 1)
 
     # [V11] Cross-Platform Deterministic Quantization
-    # Scale Table: [0.5, 1.0, 1.5, ..., 32.0] (64 levels)
-    scales_clamped = scales_hat.clamp(0.5, 32.0)
+    scales_clamped = scales_hat_raw.clamp(0.5, 32.0)
     scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64).clamp(0, 63)
     scales_hat = 0.5 + scale_indices.float() * 0.5
-    means_hat = torch.floor(means_hat * 10 + 0.5) / 10
+    means_hat = torch.floor(means_hat_raw * 10 + 0.5) / 10
     
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
     indexes = indexes.to(dtype=torch.int32).contiguous()
     means_hat = means_hat.contiguous()
+    
+    # [DEBUG] Comprehensive checksums (only first patch)
+    if not hasattr(self, '_debug_printed') or not self._debug_printed:
+        print(f"[DEC] z_hat sum: {z_hat.sum().item():.6f}")
+        print(f"[DEC] scales_hat_raw sum: {scales_hat_raw.sum().item():.6f}")
+        print(f"[DEC] scale_indices sum: {scale_indices.sum().item()}")
+        print(f"[DEC] means_hat sum: {means_hat.sum().item():.6f}")
+        print(f"[DEC] indexes sum: {indexes.sum().item()}")
+        print(f"[DEC] gc._quantized_cdf[0,:5]: {self.gaussian_conditional._quantized_cdf[0,:5].tolist()}")
+        self._debug_printed = True
     
     if indexes.max().item() >= 64 or indexes.min().item() < 0:
         indexes = indexes.clamp(0, 63)
