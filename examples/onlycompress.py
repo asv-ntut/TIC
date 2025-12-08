@@ -546,26 +546,43 @@ def compress_method(self, x):
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # 量化策略: 強制對齊 Scale Table (0.5, 1.0, 1.5 ...)
-    # 改用 round(x * 2) / 2，直接吸附到刻度上 (e.g. 0.75 -> 1.0, 0.74 -> 0.5)
-    # [CPU] Quantization Strategy (With Epsilon for Cross-Platform Stability)
-    # Adding 1e-5 prevents "0.500000 vs 0.499999" rounding flips between Mac/Linux
-    scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
-    scales_hat = scales_hat.clamp(0.5, 32.0)
+    # =========================================================================
+    # [V11 FIX] Cross-Platform Deterministic Quantization
+    # =========================================================================
+    # 問題：ARM Mac 和 x86 Ubuntu 的 h_s 浮點運算會產生微小差異 (e.g. 1e-6)
+    # 解法：將 scales_hat 直接映射到 Scale Table 的 **索引**，而非依賴浮點比較
+    # 
+    # Scale Table: [0.5, 1.0, 1.5, ..., 32.0] (64 levels, step = 0.5)
+    # 量化公式: index = round((clamp(scale, 0.5, 32.0) - 0.5) / 0.5)
+    #           scale_quantized = 0.5 + index * 0.5
+    # =========================================================================
     
-    means_hat = torch.round((means_hat * 100) + 1e-5) / 100
+    # Step 1: Clamp to valid range
+    scales_clamped = scales_hat.clamp(0.5, 32.0)
     
-    # [CPU] Build Indexes & Compress Y
+    # Step 2: Convert to index (0-63) using integer arithmetic
+    # 乘以 2 將 0.5 步長轉換為整數步長，再減 1 (因為 0.5 對應 index 0)
+    # 使用 floor 而非 round 可以避免邊界問題 (e.g. 0.9999 vs 1.0001)
+    scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64)
+    scale_indices = scale_indices.clamp(0, 63)
+    
+    # Step 3: Convert back to quantized scale values
+    scales_hat = 0.5 + scale_indices.float() * 0.5
+    
+    # Step 4: Quantize means_hat (使用較大的量化步長以增加穩定性)
+    # 從 0.01 步長改為 0.1 步長
+    means_hat = torch.floor(means_hat * 10 + 0.5) / 10
+    
+    # [CPU] Build Indexes from quantized scales
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    
-    # [Linux/Cross-Platform Fix] Cast to int32 explicit for C++ bind stability
     indexes = indexes.to(dtype=torch.int32).contiguous()
     
-    # [CPU] Build Indexes & Compress Y
-    indexes = self.gaussian_conditional.build_indexes(scales_hat)
-    
-    # [Linux/Cross-Platform Fix] Cast to int32 explicit for C++ bind stability
-    indexes = indexes.to(dtype=torch.int32).contiguous()
+    # [DEBUG] Checksum for cross-platform verification (only first patch)
+    if not hasattr(self, '_debug_printed') or not self._debug_printed:
+        print(f"[ENCODER] z_hat sum: {z_hat.sum().item():.4f}")
+        print(f"[ENCODER] scale_indices sum: {scale_indices.sum().item()}")
+        print(f"[ENCODER] indexes sum: {indexes.sum().item()}")
+        self._debug_printed = True
     
     # STRICT CPU ENFORCEMENT & MEMORY LAYOUT
     y_cpu = y.detach().cpu().contiguous()

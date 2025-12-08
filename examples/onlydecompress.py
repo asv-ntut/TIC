@@ -583,14 +583,42 @@ def decompress_method(self, strings, shape):
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # [CPU] Quantization Strategy (Must match compress with Epsilon)
-    scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
-    scales_hat = scales_hat.clamp(0.5, 32.0)
+    # =========================================================================
+    # [V11 FIX] Cross-Platform Deterministic Quantization
+    # =========================================================================
+    # 問題：ARM Mac 和 x86 Ubuntu 的 h_s 浮點運算會產生微小差異 (e.g. 1e-6)
+    # 解法：將 scales_hat 直接映射到 Scale Table 的 **索引**，而非依賴浮點比較
+    # 
+    # Scale Table: [0.5, 1.0, 1.5, ..., 32.0] (64 levels, step = 0.5)
+    # 量化公式: index = round((clamp(scale, 0.5, 32.0) - 0.5) / 0.5)
+    #           scale_quantized = 0.5 + index * 0.5
+    # =========================================================================
     
-    means_hat = torch.round((means_hat * 100) + 1e-5) / 100
+    # Step 1: Clamp to valid range
+    scales_clamped = scales_hat.clamp(0.5, 32.0)
     
-    # [CPU] Build Indexes
+    # Step 2: Convert to index (0-63) using integer arithmetic
+    # 乘以 2 將 0.5 步長轉換為整數步長，再減 1 (因為 0.5 對應 index 0)
+    # 使用 floor 而非 round 可以避免邊界問題 (e.g. 0.9999 vs 1.0001)
+    scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64)
+    scale_indices = scale_indices.clamp(0, 63)
+    
+    # Step 3: Convert back to quantized scale values
+    scales_hat = 0.5 + scale_indices.float() * 0.5
+    
+    # Step 4: Quantize means_hat (使用較大的量化步長以增加穩定性)
+    # 從 0.01 步長改為 0.1 步長
+    means_hat = torch.floor(means_hat * 10 + 0.5) / 10
+    
+    # [CPU] Build Indexes from quantized scales
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
+    
+    # [DEBUG] Checksum for cross-platform verification (only first patch)
+    if not hasattr(self, '_debug_printed') or not self._debug_printed:
+        print(f"[DECODER] z_hat sum: {z_hat.sum().item():.4f}")
+        print(f"[DECODER] scale_indices sum: {scale_indices.sum().item()}")
+        print(f"[DECODER] indexes sum: {indexes.sum().item()}")
+        self._debug_printed = True
     
     # [Windows Stability Fix] Cast to int32 explicit AND ensure contiguous memory
     indexes = indexes.to(dtype=torch.int32).contiguous()
