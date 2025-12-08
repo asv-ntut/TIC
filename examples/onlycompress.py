@@ -533,6 +533,8 @@ def compress_method(self, x):
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
     
+    print(f"DEBUG: z_hat checksum: {z_hat.sum().item():.3f}") # <--- NEW CHECKPOINT 1
+    
     # 繼續計算 scales_hat 以便進行 Y 的壓縮
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
@@ -542,6 +544,9 @@ def compress_method(self, x):
     # [CPU] Quantization Strategy (With Epsilon for Cross-Platform Stability)
     # Adding 1e-5 prevents "0.500000 vs 0.499999" rounding flips between Mac/Linux
     scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
+    
+    print(f"DEBUG: scales_hat checksum (pre-clamp): {scales_hat.sum().item():.3f}") # <--- NEW CHECKPOINT 2
+    
     scales_hat = scales_hat.clamp(0.5, 32.0)
     
     means_hat = torch.round((means_hat * 100) + 1e-5) / 100

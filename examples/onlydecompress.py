@@ -575,19 +575,21 @@ def decompress_method(self, strings, shape):
     self.gaussian_conditional.cpu()
     
     # [CPU] Decompress Z
-    # EntropyBottleneck 解碼通常回傳 CPU Tensor (或跟隨 device)，確保它是 CPU
     z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
     if z_hat.device.type != 'cpu':
         z_hat = z_hat.cpu()
+        
+    print(f"DEBUG: z_hat checksum: {z_hat.sum().item():.3f}")  # <--- NEW CHECKPOINT 1
         
     # [CPU] Hyper Transform (h_s)
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # print("DEBUG: Scales Done. Quantizing (CPU)...")
-
     # [CPU] Quantization Strategy (Must match compress with Epsilon)
     scales_hat = torch.round((scales_hat * 2) + 1e-5) / 2
+    
+    print(f"DEBUG: scales_hat checksum (pre-clamp): {scales_hat.sum().item():.3f}") # <--- NEW CHECKPOINT 2
+    
     scales_hat = scales_hat.clamp(0.5, 32.0)
     
     means_hat = torch.round((means_hat * 100) + 1e-5) / 100
