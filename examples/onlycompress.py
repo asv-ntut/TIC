@@ -534,6 +534,11 @@ def compress_method(self, x):
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
     
+    # [DEBUG] eb CDF checksum
+    eb = self.entropy_bottleneck
+    print(f"[ENC] eb._quantized_cdf sum: {eb._quantized_cdf.sum().item()}")
+    print(f"[ENC] eb._offset sum: {eb._offset.sum().item()}")
+    
     gaussian_params = self.h_s(z_hat)
     scales_hat_raw, means_hat_raw = gaussian_params.chunk(2, 1)
 

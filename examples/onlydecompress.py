@@ -574,6 +574,11 @@ def decompress_method(self, strings, shape):
     z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
     if z_hat.device.type != 'cpu':
         z_hat = z_hat.cpu()
+    
+    # [DEBUG] eb CDF checksum
+    eb = self.entropy_bottleneck
+    print(f"[DEC] eb._quantized_cdf sum: {eb._quantized_cdf.sum().item()}")
+    print(f"[DEC] eb._offset sum: {eb._offset.sum().item()}")
         
     gaussian_params = self.h_s(z_hat)
     scales_hat_raw, means_hat_raw = gaussian_params.chunk(2, 1)
