@@ -744,14 +744,22 @@ def load_checkpoint(checkpoint_path):
             print(f"{k}: {new_state_dict[k].shape if hasattr(new_state_dict[k], 'shape') else 'No Shape'}")
 
     model = SimpleConvStudentModel(N=N, M=M)
-    msg = model.load_state_dict(new_state_dict, strict=False)
     
-    if msg is not None and msg.missing_keys:
-        print("\n" + "="*40)
-        print("[WARNING] MISSING KEYS IN DECODER:")
-        for k in msg.missing_keys:
-            print(f"  - {k}")
-        print("="*40 + "\n")
+    # [DEBUG] Force strict=True to verify if weights are actually loading
+    # If this crashes, it means the keys don't match, explaining the 2dB PSNR.
+    try:
+        print("DEBUG: Attempting load_state_dict with strict=True...")
+        model.load_state_dict(new_state_dict, strict=True)
+        print("DEBUG: Strict load successful! Weights should be correct.")
+    except RuntimeError as e:
+        print("\n" + "!"*60)
+        print("[CRITICAL] STRICT LOAD FAILED! Model weights mismatch!")
+        print("This explains why the output is garbage (random weights).")
+        print(f"Error details:\n{e}")
+        print("!"*60 + "\n")
+        # We allow it to continue with strict=False only to show the user what happens, 
+        # but we now know the root cause.
+        model.load_state_dict(new_state_dict, strict=False)
     
     # ==========================================================================
     # 量化策略: 強制統一 Scale Table (Coarse Grid)
