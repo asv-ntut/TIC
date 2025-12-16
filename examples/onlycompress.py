@@ -525,7 +525,7 @@ def compress_method(self, x):
     y = self.g_a(x)
     z = self.h_a(y)
     
-    # Force CPU for entropy coding (cross-platform determinism)
+    # Force CPU
     self.entropy_bottleneck.cpu()
     self.h_s.cpu()
     self.gaussian_conditional.cpu()
@@ -533,14 +533,20 @@ def compress_method(self, x):
     
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
-
-    # [保護機制] 壓縮端也要用 Double 來計算 Header 資訊
+    
+    # [關鍵修正] 
+    # 1. 將 h_s 層轉為 Double (雙倍精度)
     self.h_s = self.h_s.double()
+    
+    # 2. [這裡是你原本報錯的地方] 
+    # 輸入的 z_hat 也要轉成 Double，才能跟 h_s 匹配
     z_hat_double = z_hat.double()
-    gaussian_params = self.h_s(z_hat)
+    
+    # 3. 運算 (現在 Input 和 Weight 都是 Double 了，不會報錯)
+    gaussian_params = self.h_s(z_hat_double)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # 轉回 Float
+    # 4. 轉回 Float (因為後續量化不需要 Double，且要跟 fixed_cdfs 相容)
     scales_hat = scales_hat.float()
     means_hat = means_hat.float()
 
@@ -560,9 +566,7 @@ def compress_method(self, x):
     
     return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 
-
 SimpleConvStudentModel.compress = compress_method
-
 
 from conv2 import get_scale_table
 
