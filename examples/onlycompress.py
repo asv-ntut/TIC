@@ -533,9 +533,16 @@ def compress_method(self, x):
     
     z_strings = self.entropy_bottleneck.compress(z)
     z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
-    
+
+    # [保護機制] 壓縮端也要用 Double 來計算 Header 資訊
+    self.h_s = self.h_s.double()
+    z_hat_double = z_hat.double()
     gaussian_params = self.h_s(z_hat)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
+
+    # 轉回 Float
+    scales_hat = scales_hat.float()
+    means_hat = means_hat.float()
 
     # [V11] Cross-Platform Deterministic Quantization
     scales_clamped = scales_hat.clamp(0.5, 32.0)
@@ -700,8 +707,8 @@ def load_checkpoint(checkpoint_path):
     scale_table = torch.linspace(0.5, 32.0, 64)
     
     # 強制更新模型內的表和 CDF
-    model.gaussian_conditional.update_scale_table(scale_table, force=True)
-    model.update(force=True)
+    # model.gaussian_conditional.update_scale_table(scale_table, force=True)
+    # model.update(force=True)
     
     # ==========================================================================
     # 強制統一 EntropyBottleneck CDFs & Medians

@@ -566,19 +566,36 @@ except ImportError:
 def decompress_method(self, strings, shape):
     assert isinstance(strings, list) and len(strings) == 2
     
-    # Force CPU for entropy coding (cross-platform determinism)
+    # 1. Force CPU
     self.entropy_bottleneck.cpu()
     self.h_s.cpu()
     self.gaussian_conditional.cpu()
     
+    # [保護機制 1] 轉為雙倍精準度 (Double Precision)
+    # 這能消除 ARM vs x86 的浮點數誤差
+    self.h_s = self.h_s.double() 
+
+    # Z-String Padding
+    z_str_list = strings[1]
+    if isinstance(z_str_list, list) and isinstance(z_str_list[0], (bytes, bytearray)):
+         z_str_list[0] = z_str_list[0] + b'\x00' * 4096 
+            
+    # 2. 解 Z
     z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
-    if z_hat.device.type != 'cpu':
-        z_hat = z_hat.cpu()
-        
-    gaussian_params = self.h_s(z_hat)
+    if z_hat.device.type != 'cpu': z_hat = z_hat.cpu()
+    
+    # [保護機制 1] 輸入也轉為 Double
+    z_hat_double = z_hat.double()
+    
+    # 3. 運算 (在 Double 模式下進行)
+    gaussian_params = self.h_s(z_hat_double)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # [V11] Cross-Platform Deterministic Quantization
+    # 轉回 Float32 進行量化 (因為後續通常不需要 Double 了)
+    scales_hat = scales_hat.float()
+    means_hat = means_hat.float()
+
+    # 量化邏輯 (必須與壓縮端一致)
     scales_clamped = scales_hat.clamp(0.5, 32.0)
     scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64).clamp(0, 63)
     scales_hat = 0.5 + scale_indices.float() * 0.5
@@ -586,30 +603,34 @@ def decompress_method(self, strings, shape):
     
     indexes = self.gaussian_conditional.build_indexes(scales_hat).to(torch.int32).contiguous()
     means_hat = means_hat.contiguous()
-    
-    if indexes.max().item() >= 64 or indexes.min().item() < 0:
-        indexes = indexes.clamp(0, 63)
-        
-    # Decompress Y on CPU (single thread for stability)
+    indexes = indexes.clamp(0, 63)
+
+    # Y-String Padding
+    y_str_list = strings[0]
+    if isinstance(y_str_list, list) and isinstance(y_str_list[0], (bytes, bytearray)):
+        y_str_list[0] = y_str_list[0] + b'\x00' * 4096
+            
+    # 4. 解 Y
     try:
-        prev_threads = torch.get_num_threads()
         torch.set_num_threads(1)
         y_hat = self.gaussian_conditional.decompress(strings[0], indexes.cpu(), means=means_hat.cpu())
-        torch.set_num_threads(prev_threads)
     except Exception as e:
-        print(f"[ERROR] Decompression Failed: {e}")
-        y_hat = torch.zeros_like(means_hat)
+        print(f"[ERROR] Block Corruption: {e}")
+        y_hat = means_hat.clone() # 熔斷 1
 
-    if torch.isnan(y_hat).any():
-        y_hat = torch.nan_to_num(y_hat)
+    # [保護機制 2] 數值熔斷器 (Sanitizer)
+    # 如果解出來的值太扯 (>100)，直接用 Means 覆蓋，消滅雪花
+    if torch.isnan(y_hat).any() or y_hat.abs().max() > 100.0:
+        # print("[Sanitizer] Snow detected! Applying blur fix.")
+        mask_bad = (y_hat.abs() > 100.0) | torch.isnan(y_hat)
+        y_hat[mask_bad] = means_hat[mask_bad]
         
-    # Move to GPU for g_s
     device = next(self.g_s.parameters()).device
-    y_hat = y_hat.to(device)
+    # 確保 g_s 是 float32 (因為我們沒轉 g_s)
+    y_hat = y_hat.to(device).float()
     
     x_hat = self.g_s(y_hat).clamp_(0, 1)
     return {"x_hat": x_hat}
-
 
 SimpleConvStudentModel.decompress = decompress_method
 
