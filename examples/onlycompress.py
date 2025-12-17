@@ -511,11 +511,11 @@ except ImportError as e:
     print(f"錯誤: 找不到 conv2.py，或其依賴套件載入失敗。\n詳細錯誤: {e}")
     sys.exit(1)
 
-# 嘗試匯入 rasterio
+# 嘗試匯入 tifffile (取代 rasterio，較容易在 ARM 平台安裝)
 try:
-    import rasterio
+    import tifffile
 except ImportError:
-    rasterio = None
+    tifffile = None
 
 
 # ==============================================================================
@@ -638,16 +638,31 @@ def read_image_patch(filepath: str, crop_box=None) -> torch.Tensor:
     """讀取影像區塊並轉為 Tensor"""
     ext = os.path.splitext(filepath)[-1].lower()
     if ext in ['.tif', '.tiff']:
-        if rasterio is None: raise RuntimeError("需安裝 rasterio")
+        if tifffile is None: 
+            raise RuntimeError("需安裝 tifffile (pip install tifffile)")
+        
         SCALE = 10000.0
-        with rasterio.open(filepath) as src:
-            if crop_box:
-                left, upper, right, lower = crop_box
-                window = rasterio.windows.Window(left, upper, right - left, lower - upper)
-                raw_data = src.read(window=window).astype(np.float32)
-            else:
-                raw_data = src.read().astype(np.float32)
-        if np.isnan(raw_data).any(): raw_data = np.nan_to_num(raw_data)
+        # 使用 tifffile 讀取
+        raw_data = tifffile.imread(filepath).astype(np.float32)
+        
+        # 處理維度順序：tifffile 讀出可能是 (H, W, C) 或 (C, H, W)
+        if raw_data.ndim == 3:
+            # 如果最後一維是通道數（較小），轉為 (C, H, W)
+            if raw_data.shape[2] <= 4:  # 假設通道數不超過 4
+                raw_data = np.transpose(raw_data, (2, 0, 1))  # (H, W, C) -> (C, H, W)
+        elif raw_data.ndim == 2:
+            # 灰階圖，擴展為 (1, H, W)
+            raw_data = np.expand_dims(raw_data, axis=0)
+        
+        # 裁切區塊
+        if crop_box:
+            left, upper, right, lower = crop_box
+            raw_data = raw_data[:, upper:lower, left:right]
+        
+        if np.isnan(raw_data).any(): 
+            raw_data = np.nan_to_num(raw_data)
+        
+        # 取前 3 通道作為 RGB
         rgb_data = raw_data[:3, :, :] if raw_data.shape[0] >= 3 else raw_data
         clipped_data = np.clip(rgb_data, 0.0, 10000.0)
         return torch.from_numpy(clipped_data / SCALE)
@@ -786,9 +801,16 @@ def main():
     print(f"輸出資料夾: {save_dir}")
 
     # 取得影像尺寸
-    if rasterio and os.path.splitext(args.input_path)[-1].lower() in ['.tif', '.tiff']:
-        with rasterio.open(args.input_path) as src:
-            img_w, img_h = src.width, src.height
+    if tifffile and os.path.splitext(args.input_path)[-1].lower() in ['.tif', '.tiff']:
+        raw_data = tifffile.imread(args.input_path)
+        if raw_data.ndim == 3:
+            if raw_data.shape[2] <= 4:  # (H, W, C)
+                img_h, img_w = raw_data.shape[0], raw_data.shape[1]
+            else:  # (C, H, W)
+                img_h, img_w = raw_data.shape[1], raw_data.shape[2]
+        else:  # (H, W)
+            img_h, img_w = raw_data.shape[0], raw_data.shape[1]
+        del raw_data  # 釋放記憶體
     else:
         with Image.open(args.input_path) as img:
             img_w, img_h = img.size
@@ -825,9 +847,8 @@ def main():
             try:
                 x = read_image_patch(args.input_path, box).unsqueeze(0).to(device)
             except Exception as e:
-                # 處理邊緣超出情況，通常 PIL crop 會自動縮小，這時需要 pad 回 256
-                # 這裡為了穩健性，我們手動讀取並 Pad
-                # (略過複雜 padding 邏輯，假設 read_image_patch 會回傳正確 tensor)
+                # 印出錯誤訊息以便除錯
+                print(f"\n[ERROR] 讀取 row={row}, col={col} 失敗: {e}")
                 continue
 
             # 確保輸入是 256x256 (若在邊緣可能變小)
