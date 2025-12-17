@@ -153,9 +153,10 @@ def read_image_patch(filepath: str, crop_box=None) -> torch.Tensor:
         if tifffile is None: 
             raise RuntimeError("需安裝 tifffile (pip install tifffile)")
         
-        SCALE = 10000.0
-        # 使用 tifffile 讀取
-        raw_data = tifffile.imread(filepath).astype(np.float32)
+        # 使用 tifffile 讀取（保留原始 dtype 資訊）
+        raw_data_original = tifffile.imread(filepath)
+        original_dtype = raw_data_original.dtype
+        raw_data = raw_data_original.astype(np.float32)
         
         # 處理維度順序：tifffile 讀出可能是 (H, W, C) 或 (C, H, W)
         if raw_data.ndim == 3:
@@ -176,8 +177,17 @@ def read_image_patch(filepath: str, crop_box=None) -> torch.Tensor:
         
         # 取前 3 通道作為 RGB
         rgb_data = raw_data[:3, :, :] if raw_data.shape[0] >= 3 else raw_data
-        clipped_data = np.clip(rgb_data, 0.0, 10000.0)
-        return torch.from_numpy(clipped_data / SCALE)
+        
+        # 根據數據類型自動選擇縮放方式
+        if original_dtype == np.uint8:
+            # 已正規化的圖片 (0~255)
+            clipped_data = np.clip(rgb_data, 0.0, 255.0)
+            return torch.from_numpy(clipped_data / 255.0)
+        else:
+            # 衛星原始數據 (0~10000 或更大)
+            SCALE = 10000.0
+            clipped_data = np.clip(rgb_data, 0.0, 10000.0)
+            return torch.from_numpy(clipped_data / SCALE)
     else:
         img = Image.open(filepath).convert("RGB")
         if crop_box:
