@@ -2,6 +2,8 @@ import argparse
 import os
 import sys
 import glob
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 import math
 import struct
 import zlib
@@ -24,6 +26,8 @@ except ImportError as e:
 
 try:
     import rasterio
+    from rasterio.errors import NotGeoreferencedWarning
+    warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 except ImportError:
     rasterio = None
 
@@ -310,7 +314,7 @@ def load_checkpoint(checkpoint_path):
             torch.tensor(FIXED_GC_LENGTH, device=device, dtype=torch.int32))
         gc.scale_table = torch.tensor(FIXED_GC_SCALE_TABLE, device=device)
             
-        print("[INFO] EntropyBottleneck & GaussianConditional CDFs overwritten.")
+
     except ImportError:
         print("[WARNING] fixed_cdfs.py not found or incomplete!")
     except Exception as e:
@@ -378,7 +382,7 @@ def main():
     # 計算畫布大小
     canvas_w = (max_col + 1) * PATCH_SIZE
     canvas_h = (max_row + 1) * PATCH_SIZE
-    print(f"最大矩陣: Row {max_row}, Col {max_col} | 重建畫布: {canvas_w}x{canvas_h}")
+    print(f"最大矩陣: Row {max_row}, Col {max_col} | 原始大小: {canvas_w}x{canvas_h}")
     print(f"有效封包數: {len(valid_packets)} / {len(bin_files)} (遺失/損毀: {len(bin_files) - len(valid_packets)})")
 
     # 建立黑色畫布 (RGB 0,0,0)
@@ -434,9 +438,9 @@ def main():
             if HAS_MSSSIM:
                 val_msssim = ms_ssim(gt_tensor.unsqueeze(0), rec_tensor.unsqueeze(0), data_range=1.0).item()
 
-            print(f"🚀 PSNR:    {val_psnr:.4f} dB")
+            print(f"PSNR:    {val_psnr:.4f} dB")
             if HAS_MSSSIM:
-                print(f"🚀 MS-SSIM: {val_msssim:.4f}")
+                print(f"MS-SSIM: {val_msssim:.4f}")
             print("-" * 40)
 
         except Exception as e:

@@ -2,6 +2,8 @@ import argparse
 import os
 import sys
 import glob
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 import time
 import struct
 import zlib  # 用於 CRC32
@@ -215,7 +217,7 @@ def process_compress(model, x, output_path, img_id, row, col):
     # 改用衛星封包格式儲存
     save_satellite_packet(out_enc, output_path, img_id, row, col)
 
-    # 計算 BPP 供參考
+    # 計算 bpp 供參考
     num_pixels = x.size(0) * x.size(2) * x.size(3)
     total_bits = os.path.getsize(output_path) * 8.0  # 使用實際檔案大小(含header/crc)計算
     return total_bits / num_pixels
@@ -281,7 +283,7 @@ def load_checkpoint(checkpoint_path):
             torch.tensor(FIXED_GC_LENGTH, device=device, dtype=torch.int32))
         gc.scale_table = torch.tensor(FIXED_GC_SCALE_TABLE, device=device)
             
-        print("[INFO] EntropyBottleneck & GaussianConditional CDFs overwritten.")
+
     except ImportError:
         print("[WARNING] fixed_cdfs.py not found or incomplete!")
     except Exception as e:
@@ -323,7 +325,7 @@ def compress_single_image(model, input_path, output_dir, img_id, device, PATCH_S
     total_patches = num_cols * num_rows
 
     print(f"原始影像: {img_w}x{img_h}")
-    print(f"分割模式: {num_rows}x{num_cols} (共 {total_patches} 個區塊)")
+    print(f"分割模式( segmentation ): {num_rows}x{num_cols} (共 {total_patches} 個區塊)")
     print(f"Image ID: {img_id}")
 
     start_time = time.time()
@@ -356,11 +358,11 @@ def compress_single_image(model, input_path, output_dir, img_id, device, PATCH_S
             bpp = process_compress(model, x, bin_path, img_id, row, col)
             total_bpp += bpp
 
-            print(f"壓縮進度: {count}/{total_patches} | Row:{row} Col:{col} | BPP: {bpp:.4f}", end='\r')
+            print(f"壓縮進度: {count}/{total_patches} | Row:{row} Col:{col} | bpp: {bpp:.4f}", end='\r')
 
     avg_bpp = total_bpp / total_patches if total_patches > 0 else 0
     elapsed = time.time() - start_time
-    print(f"\n壓縮完成! 平均 BPP: {avg_bpp:.4f} | 耗時: {elapsed:.2f} 秒")
+    print(f"\n壓縮完成! 平均 bpp: {avg_bpp:.4f} | 耗時: {elapsed:.2f} 秒")
     return avg_bpp, elapsed
 
 # ==============================================================================
@@ -405,7 +407,7 @@ def main():
     image_files = sorted(set(image_files))
     
     print(f"=== 準備處理 {len(image_files)} 張圖片 ===")
-    print(f"裝置: {device}")
+
     
     total_start = time.time()
     all_bpp = []
@@ -431,7 +433,7 @@ def main():
     print(f"=== 全部完成 ===")
     print(f"處理圖片數: {len(all_bpp)}/{len(image_files)}")
     if all_bpp:
-        print(f"整體平均 BPP: {sum(all_bpp)/len(all_bpp):.4f}")
+        print(f"整體平均 bpp: {sum(all_bpp)/len(all_bpp):.4f}")
     print(f"總耗時: {total_elapsed:.2f} 秒")
     print('='*50)
 

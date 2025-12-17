@@ -66,6 +66,7 @@ venv.bak/
 # Project Specific
 *.bin
 *.png
+*.tif
 !wang_cropped_4097x3072.png
 *.pt
 *.pth
