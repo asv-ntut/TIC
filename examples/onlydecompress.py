@@ -407,6 +407,11 @@ def main():
             print(f"\n[解碼失敗] 區塊 ({r},{c}) 資料異常: {e}")
 
     print("\n拼貼完成，儲存影像...")
+    # 亮度調亮 50% (factor = 1.5)
+    from PIL import ImageEnhance
+    enhancer = ImageEnhance.Brightness(full_recon_img)
+    full_recon_img = enhancer.enhance(1.5)
+    
     output_path = os.path.join(args.bin_dir, "RECONSTRUCTED_SATELLITE.png")
     full_recon_img.save(output_path)
     print(f"結果已儲存: {output_path}")
