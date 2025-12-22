@@ -185,10 +185,10 @@ def read_image_patch(filepath: str, crop_box=None) -> torch.Tensor:
             if raw_data.shape[2] <= 4:  # 假設通道數不超過 4
                 raw_data = np.transpose(raw_data, (2, 0, 1))  # (H, W, C) -> (C, H, W)
         
-        ########## 無使用到灰階，可移除elif，by 天佑 ##########
-        # elif raw_data.ndim == 2:
-        #     # 灰階圖，擴展為 (1, H, W)
-        #     raw_data = np.expand_dims(raw_data, axis=0)
+        ########## msg:無使用到灰階，可移除elif，by 天佑 ##########
+        elif raw_data.ndim == 2:
+            # 灰階圖，擴展為 (1, H, W)
+            raw_data = np.expand_dims(raw_data, axis=0)
         
         # 裁切區塊
         if crop_box:
@@ -198,9 +198,14 @@ def read_image_patch(filepath: str, crop_box=None) -> torch.Tensor:
         if np.isnan(raw_data).any(): 
             raw_data = np.nan_to_num(raw_data)
         
+        ########## msg:根據輸入影像，預設不會是灰階，可以簡化判斷如下，by 天佑 ##########
+        # rgb_data = raw_data[:3, :, :]
         # 取前 3 通道作為 RGB
         rgb_data = raw_data[:3, :, :] if raw_data.shape[0] >= 3 else raw_data
         
+
+        ########## msg:根據SCALE值，可選擇移除if，留下衛星原始數據，by 天佑 ##########
+
         # 根據數據類型自動選擇縮放方式
         if original_dtype == np.uint8:
             # 已正規化的圖片 (0~255)
@@ -324,6 +329,7 @@ def compress_single_image(model, input_path, output_dir, img_id, device, PATCH_S
     # 取得影像尺寸
     if tifffile and os.path.splitext(input_path)[-1].lower() in ['.tif', '.tiff']:
         raw_data = tifffile.imread(input_path)
+        ########## msg:根據輸入影像，預設不會是灰階，下面{else: # (H, W)} 可簡化判斷，by 天佑 ##########
         if raw_data.ndim == 3:
             if raw_data.shape[2] <= 4:  # (H, W, C)
                 img_h, img_w = raw_data.shape[0], raw_data.shape[1]
@@ -400,7 +406,7 @@ def main():
     parser.add_argument("--cuda", action="store_true", default=True)
     parser.add_argument("--id", type=int, default=1, help="Image ID (0-255)")
     args = parser.parse_args()
-
+ 
     # 初始化設定
     PATCH_SIZE = 256
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
@@ -412,6 +418,7 @@ def main():
     image_files = []
     for path in args.input_path:
         if os.path.isdir(path):
+            
             # 如果是資料夾，找出所有圖片檔
             for ext in ['*.png', '*.jpg', '*.jpeg', '*.tif', '*.tiff', '*.PNG', '*.JPG', '*.TIF', '*.TIFF']:
                 image_files.extend(glob.glob(os.path.join(path, ext)))
