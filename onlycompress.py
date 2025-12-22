@@ -45,22 +45,40 @@ def compress_method(self, x):
     self.gaussian_conditional.cpu()
     z = z.cpu()
     
-    z_strings = self.entropy_bottleneck.compress(z)
-    z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+    # =========================================================================
+    # [優化修改區] 分開執行：一路產字串，一路產 z_hat
+    # =========================================================================
     
+    # 1. 產出 Bitstream (這是要寫入檔案的，不能省)
+    z_strings = self.entropy_bottleneck.compress(z)
+    
+    # 2. 產出 z_hat (用數學運算直接算，跳過 decompress)
+    # 必須取得 EntropyBottleneck 內部的 medians (因為 z 分佈中心不是 0)
+    medians = self.entropy_bottleneck._get_medians().detach()
+    
+    # 處理維度擴展 (參考 CompressAI 原始碼邏輯)
+    spatial_dims = len(z.size()) - 2
+    medians = self.entropy_bottleneck._extend_ndims(medians, spatial_dims)
+    medians = medians.expand(z.size(0), *([-1] * (spatial_dims + 1)))
+    
+    # 直接做量化 (Mode="dequantize" 會做 Round + 加回 medians)
+    # 這樣得到的 z_hat 跟 decompress 出來的是一模一樣的，但速度快很多
+    z_hat = self.entropy_bottleneck.quantize(z, "dequantize", medians)
+    
+    # =========================================================================
+
     # [關鍵修正] 
     # 1. 將 h_s 層轉為 Double (雙倍精度)
     self.h_s = self.h_s.double()
     
-    # 2. [這裡是你原本報錯的地方] 
-    # 輸入的 z_hat 也要轉成 Double，才能跟 h_s 匹配
+    # 2. 輸入的 z_hat 也要轉成 Double，才能跟 h_s 匹配
     z_hat_double = z_hat.double()
     
-    # 3. 運算 (現在 Input 和 Weight 都是 Double 了，不會報錯)
+    # 3. 運算 (現在 Input 和 Weight 都是 Double 了)
     gaussian_params = self.h_s(z_hat_double)
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
 
-    # 4. 轉回 Float (因為後續量化不需要 Double，且要跟 fixed_cdfs 相容)
+    # 4. 轉回 Float
     scales_hat = scales_hat.float()
     means_hat = means_hat.float()
 
@@ -80,6 +98,7 @@ def compress_method(self, x):
     
     return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 
+# 套用修改
 SimpleConvStudentModel.compress = compress_method
 
 from conv2 import get_scale_table
@@ -165,9 +184,11 @@ def read_image_patch(filepath: str, crop_box=None) -> torch.Tensor:
             # 如果最後一維是通道數（較小），轉為 (C, H, W)
             if raw_data.shape[2] <= 4:  # 假設通道數不超過 4
                 raw_data = np.transpose(raw_data, (2, 0, 1))  # (H, W, C) -> (C, H, W)
-        elif raw_data.ndim == 2:
-            # 灰階圖，擴展為 (1, H, W)
-            raw_data = np.expand_dims(raw_data, axis=0)
+        
+        ########## 無使用到灰階，可移除elif，by 天佑 ##########
+        # elif raw_data.ndim == 2:
+        #     # 灰階圖，擴展為 (1, H, W)
+        #     raw_data = np.expand_dims(raw_data, axis=0)
         
         # 裁切區塊
         if crop_box:
@@ -325,7 +346,7 @@ def compress_single_image(model, input_path, output_dir, img_id, device, PATCH_S
     total_patches = num_cols * num_rows
 
     print(f"原始影像: {img_w}x{img_h}")
-    print(f"分割模式( segmentation ): {num_rows}x{num_cols} (共 {total_patches} 個區塊)")
+    print(f"分割模式（segmentation）: {num_rows}x{num_cols} (共 {total_patches} 個區塊)")
     print(f"Image ID: {img_id}")
 
     start_time = time.time()
