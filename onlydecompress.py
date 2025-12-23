@@ -99,6 +99,15 @@ def decompress_method(self, strings, shape):
 
     # [保護機制 2] 數值熔斷器 (Sanitizer)
     # 如果解出來的值太扯 (>100)，直接用 Means 覆蓋，消滅雪花
+    """
+        作用：把極端/NaN 的 latent 值 y_hat 用對應的 means_hat 替換，避免輸出出現「雪花」（亮/暗刺斑）或強烈雜訊。
+
+    視覺結果：少量替換 → 幾個小區域會變得平滑／失去細節但看起來正常；大量替換 → 明顯模糊、細節喪失，區塊看起來像被「平均化」了。
+
+    對品質指標：若原始是受損（有雪花），此處理通常會提高 PSNR(去除極端錯誤),
+    但相較於理想、未受損的解碼會降低細節，可能稍降 PSNR / MS-SSIM。
+    為何用 means_hat:means_hat 是模型預期的中心值(per-element),替換後輸出仍保留原本的空間/通道結構，比直接用零或常數更自然。
+    """
     if torch.isnan(y_hat).any() or y_hat.abs().max() > 100.0:
         # print("[Sanitizer] Snow detected! Applying blur fix.")
         mask_bad = (y_hat.abs() > 100.0) | torch.isnan(y_hat)
@@ -222,6 +231,7 @@ def process_decompress_packet(model, packet_data):
 
     return x_hat
 
+########## msg:最終實作不需要花時間計算PSNR，by 天佑 ##########
 
 def psnr(a: torch.Tensor, b: torch.Tensor) -> float:
     mse = F.mse_loss(a, b).item()
@@ -240,6 +250,7 @@ def read_original_image(filepath: str) -> torch.Tensor:
         rgb_data = raw_data[:3, :, :] if raw_data.shape[0] >= 3 else raw_data
         
         # 根據數據類型自動選擇縮放方式
+        ########## msg:根據SCALE值，可選擇移除if，留下衛星原始數據，by 天佑 ##########
         if original_dtype == np.uint8:
             # 已正規化的圖片 (0~255)
             clipped_data = np.clip(rgb_data, 0.0, 255.0)
@@ -322,9 +333,6 @@ def load_checkpoint(checkpoint_path):
     # ==========================================================================
 
     return model.eval()
-
-    return model.eval()
-
 
 # ==============================================================================
 # 主程式
@@ -414,6 +422,7 @@ def main():
     # ==========================================================================
     # 5. 計算 PSNR
     # ==========================================================================
+    ########## msg:最終實作不需要花時間計算PSNR，by 天佑 ##########
     if args.original:
         print("-" * 40)
         if not os.path.exists(args.original):
