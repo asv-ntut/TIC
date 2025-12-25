@@ -113,15 +113,15 @@ for input_path in "${PATH_ARRAY[@]}"; do
         # 壓縮後資料夾大小 (bytes) - 使用 cat | wc -c 精確計算
         compressed_size=$(cat "$output_folder"/* | wc -c)
         
-        # 計算壓縮比例
-        if [ "$original_size" -gt 0 ]; then
-            reduction=$(echo "scale=1; 100 - 100 * $compressed_size / $original_size" | bc)
+        # 計算壓縮率
+        if [ "$original_size" -gt 0 ] && [ "$compressed_size" -gt 0 ]; then
+            compression_ratio=$(echo "scale=1; $original_size / $compressed_size" | bc)
         else
-            reduction="N/A"
+            compression_ratio="N/A"
         fi
         
         echo -e "  ${BLUE}${base_name}${NC}"
-        echo -e "    原始: ${original_size} bytes → 壓縮後: ${compressed_size} bytes (縮小 ${GREEN}${reduction}%${NC})"
+        echo -e "    Original image: ${original_size} bytes → Compressed image: ${compressed_size} bytes (${GREEN}${compression_ratio}x${NC} compression)"
         
         TOTAL_ORIGINAL=$((TOTAL_ORIGINAL + original_size))
         TOTAL_COMPRESSED=$((TOTAL_COMPRESSED + compressed_size))
@@ -129,11 +129,6 @@ for input_path in "${PATH_ARRAY[@]}"; do
 done
 
 echo ""
-# 總計
-if [ "$TOTAL_ORIGINAL" -gt 0 ]; then
-    compression_ratio=$(echo "scale=1; $TOTAL_ORIGINAL / $TOTAL_COMPRESSED" | bc)
-    log_success "Total: ${TOTAL_ORIGINAL} bytes → ${TOTAL_COMPRESSED} bytes (${compression_ratio}x compression)"
-fi
 
 # --- 上傳到遠端 ---
 if [ "$DO_UPLOAD" = true ]; then
