@@ -155,6 +155,10 @@ while true; do
             if [ "$current_count" -gt 0 ]; then
                 echo ""
                 log_success "偵測到完整資料: $folder_name ($current_count 個封包)"
+                
+                # 輸出壓縮後資料夾大小
+                compressed_size=$(cat "$folder"* 2>/dev/null | wc -c | tr -d ' ')
+                log_info "Compressed size: ${compressed_size} bytes"
                 echo ""
                 
                 decompress_folder "$folder"

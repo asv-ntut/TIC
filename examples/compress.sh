@@ -131,8 +131,8 @@ done
 echo ""
 # 總計
 if [ "$TOTAL_ORIGINAL" -gt 0 ]; then
-    total_reduction=$(echo "scale=1; 100 - 100 * $TOTAL_COMPRESSED / $TOTAL_ORIGINAL" | bc)
-    log_success "總計: ${TOTAL_ORIGINAL} bytes → ${TOTAL_COMPRESSED} bytes (縮小 ${total_reduction}%)"
+    compression_ratio=$(echo "scale=1; $TOTAL_ORIGINAL / $TOTAL_COMPRESSED" | bc)
+    log_success "Total: ${TOTAL_ORIGINAL} bytes → ${TOTAL_COMPRESSED} bytes (${compression_ratio}x compression)"
 fi
 
 # --- 上傳到遠端 ---
