@@ -448,7 +448,7 @@ def main():
     # ==========================================================================
     from PIL import ImageEnhance
     enhancer = ImageEnhance.Brightness(full_recon_img)
-    full_recon_img = enhancer.enhance(1.5)  # 亮度調亮 50%
+    full_recon_img = enhancer.enhance(1.8)  # 亮度調亮 80%
     
     output_path = os.path.join(args.bin_dir, "RECONSTRUCTED_SATELLITE.png")
     full_recon_img.save(output_path)
