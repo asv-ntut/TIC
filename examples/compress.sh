@@ -39,6 +39,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+export RED GREEN YELLOW BLUE NC
 
 log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
@@ -77,87 +78,92 @@ print_separator
 
 SCRIPT_START=$(date +%s)
 
-# --- 執行壓縮 ---
+# --- 背景上傳函式 ---
+upload_folder() {
+    local input_path="$1"
+    local base_name=$(basename "${input_path%.*}")
+    local output_folder="${OUTPUT_DIR}/${base_name}"
+    
+    if [ -d "$output_folder" ]; then
+        # 計算壓縮統計
+        local original_size=$(cat "$input_path" 2>/dev/null | wc -c | tr -d ' ')
+        local compressed_size=$(cat "$output_folder"/* 2>/dev/null | wc -c | tr -d ' ')
+        
+        if [ "$original_size" -gt 0 ] && [ "$compressed_size" -gt 0 ]; then
+            local compression_ratio=$(echo "scale=1; $original_size / $compressed_size" | bc)
+            echo ""
+            echo -e "  ${BLUE}${base_name}${NC}"
+            echo -e "    Original image: ${original_size} bytes → Compressed image: ${compressed_size} bytes (${GREEN}${compression_ratio}x${NC} compression)"
+            log_info "  上傳中..."
+        fi
+        
+        # 上傳
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -rq \
+            "$output_folder" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}" 2>/dev/null && \
+            log_success "  ${base_name} 上傳完成" &
+    fi
+}
+
+# --- 執行壓縮 (逐張壓縮並立即上傳) ---
 log_info "正在壓縮..."
 echo ""
 
 # 將 INPUT_PATHS 轉為陣列
 read -ra PATH_ARRAY <<< "$INPUT_PATHS"
-python onlycompress.py "${PATH_ARRAY[@]}" -p "$CHECKPOINT" -o "$OUTPUT_DIR"
-COMPRESS_STATUS=$?
-
-echo ""
-
-if [ $COMPRESS_STATUS -ne 0 ]; then
-    log_error "壓縮過程發生錯誤 (exit code: $COMPRESS_STATUS)"
-    exit 1
-fi
-
-log_success "壓縮完成!"
-
-# --- 計算壓縮比例 ---
-print_separator
-log_info "壓縮統計:"
-echo ""
 
 TOTAL_ORIGINAL=0
 TOTAL_COMPRESSED=0
+UPLOAD_COUNT=0
 
 for input_path in "${PATH_ARRAY[@]}"; do
     base_name=$(basename "${input_path%.*}")
     output_folder="${OUTPUT_DIR}/${base_name}"
     
+    # 壓縮單張圖片
+    python onlycompress.py "$input_path" -p "$CHECKPOINT" -o "$OUTPUT_DIR"
+    COMPRESS_STATUS=$?
+    
+    if [ $COMPRESS_STATUS -ne 0 ]; then
+        log_error "壓縮 $base_name 失敗 (exit code: $COMPRESS_STATUS)"
+        continue
+    fi
+    
+    # 累計統計
     if [ -f "$input_path" ] && [ -d "$output_folder" ]; then
-        # 原始檔案大小 (bytes) - 使用 cat | wc -c 精確計算
-        original_size=$(cat "$input_path" | wc -c)
-        # 壓縮後資料夾大小 (bytes) - 使用 cat | wc -c 精確計算
-        compressed_size=$(cat "$output_folder"/* | wc -c)
-        
-        # 計算壓縮率
-        if [ "$original_size" -gt 0 ] && [ "$compressed_size" -gt 0 ]; then
-            compression_ratio=$(echo "scale=1; $original_size / $compressed_size" | bc)
-        else
-            compression_ratio="N/A"
-        fi
-        
-        echo -e "  ${BLUE}${base_name}${NC}"
-        echo -e "    Original image: ${original_size} bytes → Compressed image: ${compressed_size} bytes (${GREEN}${compression_ratio}x${NC} compression)"
-        
+        original_size=$(cat "$input_path" | wc -c | tr -d ' ')
+        compressed_size=$(cat "$output_folder"/* | wc -c | tr -d ' ')
         TOTAL_ORIGINAL=$((TOTAL_ORIGINAL + original_size))
         TOTAL_COMPRESSED=$((TOTAL_COMPRESSED + compressed_size))
+    fi
+    
+    # 立即背景上傳
+    if [ "$DO_UPLOAD" = true ]; then
+        upload_folder "$input_path"
+        ((UPLOAD_COUNT++))
     fi
 done
 
 echo ""
+log_success "壓縮完成!"
 
-# --- 上傳到遠端 ---
+# --- 等待所有背景上傳完成 ---
 if [ "$DO_UPLOAD" = true ]; then
     print_separator
-    log_info "正在上傳到 ${REMOTE_USER}@${REMOTE_HOST}..."
-    
-    UPLOAD_START=$(date +%s)
-    UPLOAD_COUNT=0
-    
-    for input_path in "${PATH_ARRAY[@]}"; do
-        # 從輸入路徑取得 basename (去掉路徑和副檔名)
-        base_name=$(basename "${input_path%.*}")
-        output_folder="${OUTPUT_DIR}/${base_name}"
-        
-        if [ -d "$output_folder" ]; then
-            log_info "  上傳: $output_folder"
-            scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -rq \
-                "$output_folder" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}" 2>/dev/null
-            ((UPLOAD_COUNT++))
-        else
-            log_warning "  找不到: $output_folder"
-        fi
-    done
-    
-    UPLOAD_END=$(date +%s)
-    UPLOAD_TIME=$((UPLOAD_END - UPLOAD_START))
-    
-    log_success "上傳完成! 共 $UPLOAD_COUNT 個資料夾 (耗時 ${UPLOAD_TIME} 秒)"
+    log_info "等待背景上傳完成..."
+    wait  # 等待所有背景程序
+    log_success "上傳完成! 共 $UPLOAD_COUNT 個資料夾"
 fi
+
+# --- 總統計 ---
+print_separator
+log_info "壓縮統計:"
+echo ""
+if [ "$TOTAL_ORIGINAL" -gt 0 ] && [ "$TOTAL_COMPRESSED" -gt 0 ]; then
+    total_ratio=$(echo "scale=1; $TOTAL_ORIGINAL / $TOTAL_COMPRESSED" | bc)
+    echo -e "  ${BLUE}總計${NC}"
+    echo -e "    Original image: ${TOTAL_ORIGINAL} bytes → Compressed image: ${TOTAL_COMPRESSED} bytes (${GREEN}${total_ratio}x${NC} compression)"
+fi
+echo ""
 
 # --- 統計 ---
 SCRIPT_END=$(date +%s)
