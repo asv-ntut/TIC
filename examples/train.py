@@ -442,11 +442,19 @@ def main(argv):
     train_dataset = ImageFolder(args.dataset, split="train", transform=train_transforms)
     # 新增 val_dataset 的讀取
     val_dataset = ImageFolder(args.dataset, split="val", transform=test_transforms)
-    test_dataset = ImageFolder(args.dataset, split="test", transform=test_transforms)
+    
+    # Test dataset is optional - check if folder exists
+    test_dir = os.path.join(args.dataset, "test")
+    if os.path.isdir(test_dir):
+        test_dataset = ImageFolder(args.dataset, split="test", transform=test_transforms)
+        logging.info(f"找到 {len(test_dataset)} 張測試圖片 (Found {len(test_dataset)} test images)")
+    else:
+        test_dataset = None
+        logging.info("No test folder found, skipping test dataset.")
+    
     # --- ✨ 新增這幾行來驗證 ✨ ---
     logging.info(f"找到 {len(train_dataset)} 張訓練圖片 (Found {len(train_dataset)} training images)")
     logging.info(f"找到 {len(val_dataset)} 張驗證圖片 (Found {len(val_dataset)} validation images)")
-    logging.info(f"找到 {len(test_dataset)} 張測試圖片 (Found {len(test_dataset)} test images)")
     # --- ✨ 驗證程式碼結束 ✨ ---
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
@@ -469,13 +477,17 @@ def main(argv):
         pin_memory=(device == "cuda"),
     )
 
-    test_dataloader = DataLoader(
-        test_dataset,
-        batch_size=args.test_batch_size,
-        num_workers=args.num_workers,
-        shuffle=False,
-        pin_memory=(device == "cuda"),
-    )
+    # Test dataloader is optional
+    if test_dataset is not None:
+        test_dataloader = DataLoader(
+            test_dataset,
+            batch_size=args.test_batch_size,
+            num_workers=args.num_workers,
+            shuffle=False,
+            pin_memory=(device == "cuda"),
+        )
+    else:
+        test_dataloader = None
 
     net = image_models[args.model](quality=int(args.quality_level))
     net = net.to(device)
@@ -546,9 +558,13 @@ def main(argv):
         checkpoint = torch.load(best_checkpoint_path, map_location=device)
         net.load_state_dict(checkpoint["state_dict"])
 
-        # 使用測試集進行唯一一次的最終評估
-        logging.info("Final evaluation on the test set.")
-        eval_epoch("Final", test_dataloader, net, criterion) #最後在test上 做最後一次 評估
+        # 使用測試集進行唯一一次的最終評估 (如果有的話)
+        if test_dataloader is not None:
+            logging.info("Final evaluation on the test set.")
+            eval_epoch("Final", test_dataloader, net, criterion)
+        else:
+            logging.info("Final evaluation on the validation set (no test set available).")
+            eval_epoch("Final", val_dataloader, net, criterion)
     else:
         logging.warning("Could not find best checkpoint for final testing.")
 
