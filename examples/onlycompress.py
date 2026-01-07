@@ -20,9 +20,9 @@ from PIL import Image
 # 設定：匯入模型
 # ==============================================================================
 try:
-    from conv2 import SimpleConvStudentModel
+    from compressai.models.tic import TIC
 except ImportError as e:
-    print(f"錯誤: 找不到 conv2.py，或其依賴套件載入失敗。\n詳細錯誤: {e}")
+    print(f"錯誤: 找不到 TIC 模型。\n詳細錯誤: {e}")
     sys.exit(1)
 
 # 嘗試匯入 tifffile (取代 rasterio，較容易在 ARM 平台安裝)
@@ -37,7 +37,7 @@ except ImportError:
 # ==============================================================================
 def compress_method(self, x):
     y = self.g_a(x)
-    z = self.h_a(y)
+    z = self.h_a(torch.abs(y))  # TIC model requires abs(y) for h_a
     
     # Force CPU
     self.entropy_bottleneck.cpu()
@@ -67,41 +67,26 @@ def compress_method(self, x):
     
     # =========================================================================
 
-    # [關鍵修正] 
-    # 1. 將 h_s 層轉為 Double (雙倍精度)
-    self.h_s = self.h_s.double()
+    # TIC model: h_s outputs only scales (M channels), no means
+    scales_hat = self.h_s(z_hat.float())
     
-    # 2. 輸入的 z_hat 也要轉成 Double，才能跟 h_s 匹配
-    z_hat_double = z_hat.double()
+    # Build indexes for entropy coding
+    indexes = self.gaussian_conditional.build_indexes(scales_hat)
     
-    # 3. 運算 (現在 Input 和 Weight 都是 Double 了)
-    gaussian_params = self.h_s(z_hat_double)
-    scales_hat, means_hat = gaussian_params.chunk(2, 1)
-
-    # 4. 轉回 Float
-    scales_hat = scales_hat.float()
-    means_hat = means_hat.float()
-
-    # [V11] Cross-Platform Deterministic Quantization
-    scales_clamped = scales_hat.clamp(0.5, 32.0)
-    scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64).clamp(0, 63)
-    scales_hat = 0.5 + scale_indices.float() * 0.5
-    means_hat = torch.floor(means_hat * 10 + 0.5) / 10
-    
-    indexes = self.gaussian_conditional.build_indexes(scales_hat).to(torch.int32).contiguous()
+    # Compress y (no means for TIC model)
     y_cpu = y.detach().cpu().contiguous()
     
     if torch.isnan(y_cpu).any():
         raise ValueError("FATAL: NaN detected in Latent y.")
-        
-    y_strings = self.gaussian_conditional.compress(y_cpu, indexes, means=means_hat.contiguous())
+    
+    y_strings = self.gaussian_conditional.compress(y_cpu, indexes)
     
     return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 
 # 套用修改
-SimpleConvStudentModel.compress = compress_method
+TIC.compress = compress_method
 
-from conv2 import get_scale_table
+from compressai.models.tic import get_scale_table
 
 # ==============================================================================
 # 衛星通訊專用封包函式
@@ -259,7 +244,7 @@ def load_checkpoint(checkpoint_path):
     except:
         pass
 
-    model = SimpleConvStudentModel(N=N, M=M)
+    model = TIC(N=N, M=M)
     model.load_state_dict(new_state_dict, strict=True)
     
     # ==========================================================================
