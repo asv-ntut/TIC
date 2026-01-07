@@ -67,19 +67,21 @@ def compress_method(self, x):
     
     # =========================================================================
 
-    # TIC model: h_s outputs only scales (M channels), no means
-    scales_hat = self.h_s(z_hat.float())
+    # Mean-Scale Hyperprior: h_s outputs 2M channels (scales + means)
+    gaussian_params = self.h_s(z_hat.float())
+    scales_hat, means_hat = gaussian_params.chunk(2, 1)
     
     # Build indexes for entropy coding
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
     
-    # Compress y (no means for TIC model)
+    # Compress y with means
     y_cpu = y.detach().cpu().contiguous()
+    means_cpu = means_hat.cpu()
     
     if torch.isnan(y_cpu).any():
         raise ValueError("FATAL: NaN detected in Latent y.")
     
-    y_strings = self.gaussian_conditional.compress(y_cpu, indexes)
+    y_strings = self.gaussian_conditional.compress(y_cpu, indexes, means=means_cpu)
     
     return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 

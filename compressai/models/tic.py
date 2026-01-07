@@ -38,13 +38,16 @@ def deconv(in_channels, out_channels, kernel_size=5, stride=2):
 
 class TIC(nn.Module):
     """
-    Pure CNN Image Compression Model based on the hyperprior architecture.
+    Mean-Scale Hyperprior Image Compression Model.
     
-    Architecture (matching reference diagram):
-    - g_a: conv → GDN → conv → GDN → conv → GDN → conv
-    - g_s: deconv → IGDN → deconv → IGDN → deconv → IGDN → deconv
-    - h_a: abs → conv → ReLU → conv → ReLU → conv
-    - h_s: deconv → ReLU → deconv → ReLU → conv
+    Architecture:
+    - g_a: conv → GDN → conv → GDN → conv → GDN → conv (Encoder)
+    - g_s: deconv → IGDN → deconv → IGDN → deconv → IGDN → deconv (Decoder)
+    - h_a: abs → conv → ReLU → conv → ReLU → conv (Hyper Encoder)
+    - h_s: deconv → ReLU → deconv → ReLU → conv (Hyper Decoder, outputs scales AND means)
+
+    This is the Mean-Scale variant where h_s predicts both σ (scales) and μ (means)
+    for the Gaussian conditional entropy model: y ~ N(μ, σ²)
 
     Args:
         N (int): Number of channels (default: 128)
@@ -98,14 +101,15 @@ class TIC(nn.Module):
 
         # ============================================
         # h_s: Hyper Synthesis Transform
-        # ẑ → σ (scale parameters)
+        # ẑ → (σ, μ) (scale and mean parameters)
+        # Output: 2M channels - first M are scales, last M are means
         # ============================================
         self.h_s = nn.Sequential(
             deconv(N, N, kernel_size=5, stride=2),    # deconv Nx5x5/2↑
             nn.ReLU(inplace=True),
             deconv(N, N, kernel_size=5, stride=2),    # deconv Nx5x5/2↑
             nn.ReLU(inplace=True),
-            conv(N, M, kernel_size=3, stride=1),      # conv Mx3x3/1
+            conv(N, M * 2, kernel_size=3, stride=1),  # conv 2Mx3x3/1 (scales + means)
         )
 
         # Entropy models
@@ -122,11 +126,12 @@ class TIC(nn.Module):
         # Entropy bottleneck for z
         z_hat, z_likelihoods = self.entropy_bottleneck(z)
         
-        # Hyper decoder: ẑ → scales
-        scales_hat = self.h_s(z_hat)
+        # Hyper decoder: ẑ → (scales, means)
+        gaussian_params = self.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
         
-        # Quantize y
-        y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat)
+        # Quantize y with Mean-Scale Gaussian model
+        y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
         
         # Decoder: ŷ → x̂
         x_hat = self.g_s(y_hat)
@@ -189,9 +194,12 @@ class TIC(nn.Module):
         z_strings = self.entropy_bottleneck.compress(z)
         z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
 
-        scales_hat = self.h_s(z_hat)
+        # Mean-Scale: h_s outputs both scales and means
+        gaussian_params = self.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        
         indexes = self.gaussian_conditional.build_indexes(scales_hat)
-        y_strings = self.gaussian_conditional.compress(y, indexes)
+        y_strings = self.gaussian_conditional.compress(y, indexes, means=means_hat)
         
         return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 
@@ -199,9 +207,13 @@ class TIC(nn.Module):
         assert isinstance(strings, list) and len(strings) == 2
         
         z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
-        scales_hat = self.h_s(z_hat)
+        
+        # Mean-Scale: h_s outputs both scales and means
+        gaussian_params = self.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        
         indexes = self.gaussian_conditional.build_indexes(scales_hat)
-        y_hat = self.gaussian_conditional.decompress(strings[0], indexes)
+        y_hat = self.gaussian_conditional.decompress(strings[0], indexes, means=means_hat)
         
         x_hat = self.g_s(y_hat).clamp_(0, 1)
         

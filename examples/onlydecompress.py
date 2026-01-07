@@ -59,8 +59,9 @@ def decompress_method(self, strings, shape):
     z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
     if z_hat.device.type != 'cpu': z_hat = z_hat.cpu()
     
-    # 3. TIC model: h_s outputs only scales (M channels), no means
-    scales_hat = self.h_s(z_hat.float())
+    # 3. Mean-Scale Hyperprior: h_s outputs 2M channels (scales + means)
+    gaussian_params = self.h_s(z_hat.float())
+    scales_hat, means_hat = gaussian_params.chunk(2, 1)
     
     # Build indexes for entropy coding
     indexes = self.gaussian_conditional.build_indexes(scales_hat)
@@ -70,10 +71,10 @@ def decompress_method(self, strings, shape):
     if isinstance(y_str_list, list) and isinstance(y_str_list[0], (bytes, bytearray)):
         y_str_list[0] = y_str_list[0] + b'\x00' * 4096
             
-    # 4. Decompress Y (no means for TIC model)
+    # 4. Decompress Y with means
     try:
         torch.set_num_threads(1)
-        y_hat = self.gaussian_conditional.decompress(strings[0], indexes.cpu())
+        y_hat = self.gaussian_conditional.decompress(strings[0], indexes.cpu(), means=means_hat.cpu())
     except Exception as e:
         print(f"[ERROR] Block Corruption: {e}")
         # Fallback: create zero tensor
