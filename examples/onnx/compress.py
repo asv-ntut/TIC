@@ -371,14 +371,23 @@ def main():
     parser = argparse.ArgumentParser(description="ONNX Satellite Compression (Batched)")
     parser.add_argument("input_path", type=str, nargs='+', help="Input image(s)")
     parser.add_argument("-o", "--output_dir", type=str, default="output_onnx", help="Output directory")
-    parser.add_argument("--enc", type=str, default="tic_encoder.onnx", help="Encoder ONNX")
-    parser.add_argument("--hyper", type=str, default="tic_hyper_decoder.onnx", help="HyperDecoder ONNX")
+    parser.add_argument("--enc", type=str, default=None, help="Encoder ONNX (Default: checks static_int8)")
+    parser.add_argument("--hyper", type=str, default=None, help="HyperDecoder ONNX (Default: checks static_int8)")
     parser.add_argument("--batch", type=int, default=8, help="Batch size (default: 8)")
     parser.add_argument("--id", type=int, default=1, help="Image ID (0-255)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU mode")
     args = parser.parse_args()
 
-    sessions, entropy_models = init_onnx_environment(args.enc, args.hyper, use_cuda=not args.cpu)
+    # Smart Defaults for models
+    enc_path = args.enc
+    if enc_path is None:
+        enc_path = "tic_encoder_static_int8.onnx" if os.path.exists("tic_encoder_static_int8.onnx") else "tic_encoder.onnx"
+    
+    hyper_path = args.hyper
+    if hyper_path is None:
+        hyper_path = "tic_hyper_decoder_static_int8.onnx" if os.path.exists("tic_hyper_decoder_static_int8.onnx") else "tic_hyper_decoder.onnx"
+
+    sessions, entropy_models = init_onnx_environment(enc_path, hyper_path, use_cuda=not args.cpu)
 
     image_files = []
     for path in args.input_path:

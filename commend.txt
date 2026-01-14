@@ -38,14 +38,18 @@ python dump_cdfs.py
 python onlycompress.py "../wang_cropped_4097x3072.png" -p "../1130stcheckpoint_best_loss.pth" 
 python onlydecompress.py "output_satellite/wang_cropped_4097x3072" -p "../1130stcheckpoint_best_loss.pth" --original "../wang_cropped_4097x3072.png"
 
-ONNX 使用方式 (ARM CPU 加速)
-cd onnx
+ONNX 使用方式 (ARM CPU)
+cd examples/onnx
 
-# 1. 產生 ONNX 模型 (從 .pth 轉換)
+# 1. 產生原始 ONNX 模型 (從 .pth 轉換)
 python export_onnx.py -p checkpoint_best_loss.pth.tar
 
-# 2. 壓縮圖片 (支援 batch 加速)
-python compress.py test.tif --enc tic_encoder.onnx --hyper tic_hyper_decoder.onnx --batch 8
+# 2. 進行靜態量化 (INT8) - 在開發機上執行過一次即可
+# 需要一張測試圖片（如 test.tif）作校準
+python quantize_static.py --img test.tif
 
-# 3. 解壓縮
-python decompress.py output_onnx/test --dec tic_decoder.onnx --hyper tic_hyper_decoder.onnx
+# 3. 壓縮圖片 (自動優先使用 INT8 模型)
+python compress.py test.tif --batch 8
+
+# 4. 解壓縮 (自動優先使用 INT8 模型)
+python decompress.py output_onnx/test --original test.tif --brightness 1.5

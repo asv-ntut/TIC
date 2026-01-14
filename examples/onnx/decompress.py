@@ -16,8 +16,16 @@ import zlib
 import numpy as np
 import onnxruntime as ort
 import torch
+import torch.nn.functional as F
 from torchvision import transforms
 from PIL import Image, ImageEnhance
+
+# Try to import MS-SSIM
+try:
+    from pytorch_msssim import ms_ssim
+    HAS_MSSSIM = True
+except ImportError:
+    HAS_MSSSIM = False
 
 # Import CompressAI entropy modules
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
@@ -84,7 +92,46 @@ def load_satellite_packet(bin_path):
         return None
 
 # ==============================================================================
-# 2. Initialize ONNX and Entropy Models
+# 2. Image Metrics and Loading
+# ==============================================================================
+def psnr(a: torch.Tensor, b: torch.Tensor) -> float:
+    mse = F.mse_loss(a, b).item()
+    return -10 * np.log10(mse) if mse > 0 else float('inf')
+
+def read_original_image(filepath: str) -> torch.Tensor:
+    """Read original image for PSNR calculation (handles TIFF and Standard formats)"""
+    ext = os.path.splitext(filepath)[-1].lower()
+    if ext in ['.tif', '.tiff']:
+        # Try to use tifffile if available, else PIL
+        try:
+            import tifffile
+            raw_data = tifffile.imread(filepath)
+            original_dtype = raw_data.dtype
+            
+            # Handle dim order (H,W,C) -> (C,H,W)
+            if raw_data.ndim == 3:
+                if raw_data.shape[2] <= 4: # Channel last
+                    raw_data = np.transpose(raw_data, (2, 0, 1))
+            elif raw_data.ndim == 2:
+                raw_data = np.expand_dims(raw_data, axis=0)
+            
+            # RGB only
+            rgb_data = raw_data[:3, :, :].astype(np.float32)
+            
+            if original_dtype == np.uint8:
+                return torch.from_numpy(np.clip(rgb_data, 0, 255) / 255.0)
+            else:
+                return torch.from_numpy(np.clip(rgb_data, 0, 10000) / 10000.0)
+        except ImportError:
+            # Fallback to PIL
+            img = Image.open(filepath).convert("RGB")
+            return transforms.ToTensor()(img)
+    else:
+        img = Image.open(filepath).convert("RGB")
+        return transforms.ToTensor()(img)
+
+# ==============================================================================
+# 3. Initialize ONNX and Entropy Models
 # ==============================================================================
 def init_onnx_decoder(decoder_path, hyper_path, use_cuda=True, num_threads=4):
     """Initialize ONNX sessions and entropy models with fixed CDFs."""
@@ -192,16 +239,26 @@ def process_decompress_packet(sessions, entropy_models, packet_data):
 def main():
     parser = argparse.ArgumentParser(description="ONNX Satellite Image Decompression")
     parser.add_argument("bin_dir", type=str, help="Directory containing .bin files")
-    parser.add_argument("--dec", type=str, default="tic_decoder.onnx", help="Path to Decoder ONNX model")
-    parser.add_argument("--hyper", type=str, default="tic_hyper_decoder.onnx", help="Path to HyperDecoder ONNX model")
+    parser.add_argument("--dec", type=str, default=None, help="Decoder ONNX (Default: checks static_int8)")
+    parser.add_argument("--hyper", type=str, default=None, help="HyperDecoder ONNX (Default: checks static_int8)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU mode")
+    parser.add_argument("--original", type=str, default=None, help="Path to original image for PSNR calculation")
     parser.add_argument("--target_id", type=int, default=None, help="Filter by Image ID")
     parser.add_argument("--brightness", type=float, default=1.0, help="Brightness adjustment factor (default: 1.0)")
     parser.add_argument("-o", "--output", type=str, default=None, help="Output filename (default: RECONSTRUCTED_ONNX.png)")
     args = parser.parse_args()
 
-    # Initialize ONNX
-    sessions, entropy_models = init_onnx_decoder(args.dec, args.hyper, use_cuda=not args.cpu)
+    # Smart Defaults for models
+    dec_path = args.dec
+    if dec_path is None:
+        dec_path = "tic_decoder_static_int8.onnx" if os.path.exists("tic_decoder_static_int8.onnx") else "tic_decoder.onnx"
+    
+    hyper_path = args.hyper
+    if hyper_path is None:
+        hyper_path = "tic_hyper_decoder_static_int8.onnx" if os.path.exists("tic_hyper_decoder_static_int8.onnx") else "tic_hyper_decoder.onnx"
+
+    # 1. Initialize System
+    sessions, entropy_models = init_onnx_decoder(dec_path, hyper_path, use_cuda=not args.cpu)
     PATCH_SIZE = 256
 
     # Find .bin files
@@ -260,6 +317,37 @@ def main():
 
     total_time = time.time() - start_time
     print(f"\nDecompression complete! Time: {total_time:.2f} sec")
+
+    # ==========================================================================
+    # 5. Calculate Metrics (Before brightness adjustment)
+    # ==========================================================================
+    if args.original:
+        print("-" * 40)
+        if not os.path.exists(args.original):
+            print(f"⚠️ Warning: Original image not found: {args.original}")
+        else:
+            try:
+                gt_tensor = read_original_image(args.original)
+                rec_tensor = transforms.ToTensor()(full_recon_img)
+
+                # Align dimensions
+                h_gt, w_gt = gt_tensor.shape[1], gt_tensor.shape[2]
+                h_rec, w_rec = rec_tensor.shape[1], rec_tensor.shape[2]
+                min_h, min_w = min(h_gt, h_rec), min(w_gt, w_rec)
+
+                gt_tensor = gt_tensor[:, :min_h, :min_w]
+                rec_tensor = rec_tensor[:, :min_h, :min_w]
+
+                val_psnr = psnr(gt_tensor, rec_tensor)
+                print(f"✅ PSNR:    {val_psnr:.4f} dB")
+                
+                if HAS_MSSSIM:
+                    val_msssim = ms_ssim(gt_tensor.unsqueeze(0), rec_tensor.unsqueeze(0), data_range=1.0).item()
+                    print(f"✅ MS-SSIM: {val_msssim:.4f}")
+                
+                print("-" * 40)
+            except Exception as e:
+                print(f"❌ Error calculating metrics: {e}")
 
     # Post-processing and save
     if args.brightness != 1.0:
