@@ -37,3 +37,15 @@ python dump_cdfs.py
 單獨程式使用：
 python onlycompress.py "../wang_cropped_4097x3072.png" -p "../1130stcheckpoint_best_loss.pth" 
 python onlydecompress.py "output_satellite/wang_cropped_4097x3072" -p "../1130stcheckpoint_best_loss.pth" --original "../wang_cropped_4097x3072.png"
+
+ONNX 使用方式 (ARM CPU 加速)
+cd onnx
+
+# 1. 產生 ONNX 模型 (從 .pth 轉換)
+python export_onnx.py -p checkpoint_best_loss.pth.tar
+
+# 2. 壓縮圖片 (支援 batch 加速)
+python compress.py '/Users/hsuhaohao/程式/TIC/test.tif' --enc tic_encoder.onnx --hyper tic_hyper_decoder.onnx --batch 8
+
+# 3. 解壓縮
+python decompress.py output_onnx/test --dec tic_decoder.onnx --hyper tic_hyper_decoder.onnx

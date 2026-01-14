@@ -4,7 +4,7 @@ import os
 from compressai.models.tic import TIC, get_scale_table
 
 def dump_cdfs():
-    checkpoint_path = "./pretrained/tic/3/checkpoint_best_loss.pth.tar"
+    checkpoint_path = "./onnx/checkpoint_best_loss.pth.tar"
     
     # Load model
     print(f"Loading checkpoint: {checkpoint_path}")

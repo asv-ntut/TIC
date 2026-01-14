@@ -6,7 +6,14 @@ import torch.nn.functional as F
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 from compressai.layers import GDN
 from compressai.ans import BufferedRansEncoder, RansDecoder
-from .utils import conv, update_registered_buffers
+# ==========================================================
+# 兼容模式：自動判斷是直接執行還是作為套件導入
+# ==========================================================
+try:
+    from .utils import conv, update_registered_buffers
+except ImportError:
+    from utils import conv, update_registered_buffers
+# ==========================================================
 
 # From Balle's tensorflow compression examples
 SCALES_MIN = 0.11

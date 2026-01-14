@@ -255,17 +255,9 @@ def load_checkpoint(checkpoint_path):
     model.load_state_dict(new_state_dict, strict=True)
     
     # ==========================================================================
-    # 量化策略: 強制統一 Scale Table (Coarse Grid)
-    # ==========================================================================
-    # 使用粗刻度 0.5 ~ 32.0 (共 64 階)
-    scale_table = torch.linspace(0.5, 32.0, 64)
-    
-    # 強制更新模型內的表和 CDF
-    model.gaussian_conditional.update_scale_table(scale_table, force=True)
-    model.update(force=True)
-    
-    # ==========================================================================
     # 強制統一 EntropyBottleneck & GaussianConditional CDFs
+    # NOTE: Do NOT call model.update() before loading fixed_cdfs!
+    #       It would overwrite the CDFs and cause decoding artifacts.
     # ==========================================================================
     try:
         from fixed_cdfs import FIXED_EB_CDF, FIXED_EB_OFFSET, FIXED_EB_LENGTH, FIXED_EB_MEDIANS
@@ -300,8 +292,6 @@ def load_checkpoint(checkpoint_path):
     except Exception as e:
         print(f"[WARNING] Failed to overwrite CDFs: {e}")
     # ==========================================================================
-
-    return model.eval()
 
     return model.eval()
 

@@ -67,10 +67,8 @@ venv.bak/
 *.bin
 *.png
 *.tif
-!wang_cropped_4097x3072.png
 *.pt
 *.pth
-!1130stcheckpoint_best_loss.pth
 *pth.tar
 wandb/
 output_satellite/
