@@ -45,7 +45,7 @@ cd onnx
 python export_onnx.py -p checkpoint_best_loss.pth.tar
 
 # 2. 壓縮圖片 (支援 batch 加速)
-python compress.py '/Users/hsuhaohao/程式/TIC/test.tif' --enc tic_encoder.onnx --hyper tic_hyper_decoder.onnx --batch 8
+python compress.py test.tif --enc tic_encoder.onnx --hyper tic_hyper_decoder.onnx --batch 8
 
 # 3. 解壓縮
 python decompress.py output_onnx/test --dec tic_decoder.onnx --hyper tic_hyper_decoder.onnx
