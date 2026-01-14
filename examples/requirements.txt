@@ -5,3 +5,7 @@ Pillow
 timm
 scipy
 pytorch-msssim
+onnxruntime>=1.16.0
+onnx>=1.14.0
+tifffile
+zlib-state
