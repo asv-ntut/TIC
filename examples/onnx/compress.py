@@ -378,14 +378,15 @@ def main():
     parser.add_argument("--cpu", action="store_true", help="Force CPU mode")
     args = parser.parse_args()
 
-    # Smart Defaults for models
+    # Smart Defaults for models (Mixed Precision: INT8 Encoder + FP32 Hyper)
     enc_path = args.enc
     if enc_path is None:
         enc_path = "tic_encoder_static_int8.onnx" if os.path.exists("tic_encoder_static_int8.onnx") else "tic_encoder.onnx"
     
     hyper_path = args.hyper
     if hyper_path is None:
-        hyper_path = "tic_hyper_decoder_static_int8.onnx" if os.path.exists("tic_hyper_decoder_static_int8.onnx") else "tic_hyper_decoder.onnx"
+        # Use FP32 HyperDecoder by default to prevent BPP explosion
+        hyper_path = "tic_hyper_decoder.onnx"
 
     sessions, entropy_models = init_onnx_environment(enc_path, hyper_path, use_cuda=not args.cpu)
 

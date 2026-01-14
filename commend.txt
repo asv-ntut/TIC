@@ -45,11 +45,18 @@ cd examples/onnx
 python export_onnx.py -p checkpoint_best_loss.pth.tar
 
 # 2. 進行靜態量化 (INT8) - 在開發機上執行過一次即可
-# 需要一張測試圖片（如 test.tif）作校準
+# 可用單張圖片或資料夾（多圖校準效果更穩定）
 python quantize_static.py --img test.tif
+python quantize_static.py --img /path/to/image_folder
 
-# 3. 壓縮圖片 (自動優先使用 INT8 模型)
+# 3. 壓縮圖片
+# 預設模式 (混合精度)：
+#   - Encoder: INT8
+#   - HyperDecoder: FP32
 python compress.py test.tif --batch 8
 
-# 4. 解壓縮 (自動優先使用 INT8 模型)
+# 4. 解壓縮
+# 預設模式 (高品質)：
+#   - Decoder: FP32
+#   - HyperDecoder: FP32
 python decompress.py output_onnx/test --original test.tif --brightness 1.5

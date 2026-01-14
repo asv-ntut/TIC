@@ -248,14 +248,16 @@ def main():
     parser.add_argument("-o", "--output", type=str, default=None, help="Output filename (default: RECONSTRUCTED_ONNX.png)")
     args = parser.parse_args()
 
-    # Smart Defaults for models
+    # Smart Defaults for models (FP32 for best quality, no grid lines)
     dec_path = args.dec
     if dec_path is None:
-        dec_path = "tic_decoder_static_int8.onnx" if os.path.exists("tic_decoder_static_int8.onnx") else "tic_decoder.onnx"
+        # Use FP32 Decoder by default to eliminate grid artifacts
+        dec_path = "tic_decoder.onnx"
     
     hyper_path = args.hyper
     if hyper_path is None:
-        hyper_path = "tic_hyper_decoder_static_int8.onnx" if os.path.exists("tic_hyper_decoder_static_int8.onnx") else "tic_hyper_decoder.onnx"
+        # Use FP32 HyperDecoder by default (must match compression)
+        hyper_path = "tic_hyper_decoder.onnx"
 
     # 1. Initialize System
     sessions, entropy_models = init_onnx_decoder(dec_path, hyper_path, use_cuda=not args.cpu)

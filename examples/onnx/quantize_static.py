@@ -28,26 +28,49 @@ class TICDataReader(CalibrationDataReader):
     def rewind(self):
         self.enum_data = iter([{self.input_name: p[np.newaxis, ...]} for p in self.patches])
 
-def load_calibration_data(img_path, enc_path, hyper_path, num_patches=20):
-    # 1. Load images
-    with Image.open(img_path) as img:
-        img = img.convert("RGB")
-        arr = np.array(img).transpose(2, 0, 1).astype(np.float32) / 255.0
+def load_calibration_data(img_path, enc_path, hyper_path, num_patches=200):
+    """Load calibration patches from a file or a directory of images"""
+    import glob
+    
+    image_files = []
+    if os.path.isdir(img_path):
+        for ext in ['*.tif', '*.tiff', '*.png', '*.jpg']:
+            image_files.extend(glob.glob(os.path.join(img_path, ext)))
+    else:
+        image_files = [img_path]
+
+    if not image_files:
+        raise ValueError(f"No images found at {img_path}")
+
+    print(f"Loading {num_patches} patches from {len(image_files)} images...")
     
     patches = []
-    c, h, w = arr.shape
-    ps = 256
-    for y in range(0, h - ps, h // 5):
-        for x in range(0, w - ps, w // 5):
-            patches.append(arr[:, y:y+ps, x:x+ps])
-            if len(patches) >= num_patches:
-                break
-        if len(patches) >= num_patches:
-            break
-            
-    print(f"Collected {len(patches)} image patches.")
+    patches_per_img = max(1, num_patches // len(image_files))
     
-    # 2. Run Encoder to get Y and Z
+    for f in image_files:
+        try:
+            with Image.open(f) as img:
+                img = img.convert("RGB")
+                arr = np.array(img).transpose(2, 0, 1).astype(np.float32) / 255.0
+            
+            c, h, w = arr.shape
+            ps = 256
+            count = 0
+            # Sample patches from current image
+            for y in range(0, h - ps, max(ps, h // 10)):
+                for x in range(0, w - ps, max(ps, w // 10)):
+                    patches.append(arr[:, y:y+ps, x:x+ps])
+                    count += 1
+                    if count >= patches_per_img: break
+                if count >= patches_per_img: break
+            
+            if len(patches) >= num_patches: break
+        except Exception as e:
+            print(f"Warning: Failed to load {f}: {e}")
+
+    print(f"Collected total {len(patches)} image patches.")
+    
+    # Rest of the latent generation logic remains the same
     print("Running Encoder for calibration latents...")
     enc_sess = ort.InferenceSession(enc_path)
     y_latents = []
@@ -56,9 +79,6 @@ def load_calibration_data(img_path, enc_path, hyper_path, num_patches=20):
         out = enc_sess.run(None, {enc_sess.get_inputs()[0].name: p[np.newaxis, ...]})
         y_latents.append(out[0][0])
         z_latents.append(out[1][0])
-        
-    # 3. Run HyperDecoder to get Means/Scales (for Decoder calibration if needed)
-    # Actually Decoder takes Y_hat, which is Y.
     
     return {
         "tic_encoder": patches,
@@ -107,7 +127,7 @@ def main():
             activation_type=QuantType.QUInt8,
             weight_type=QuantType.QInt8,
             per_channel=True,
-            reduce_range=True
+            reduce_range=False
         )
         
         if os.path.exists(model_pre):
