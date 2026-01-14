@@ -220,8 +220,26 @@ def process_batch_onnx(sessions, entropy_models, batch_x, batch_meta,
 # ==============================================================================
 # 5. Initialize ONNX Environment
 # ==============================================================================
-def init_onnx_environment(encoder_path, hyper_path, use_cuda=True):
+def init_onnx_environment(encoder_path, hyper_path, use_cuda=True, num_threads=4):
     """Initialize ONNX sessions and entropy models with fixed CDFs."""
+    
+    # ========== ONNX Graph Optimization (Operator Fusion) ==========
+    sess_options = ort.SessionOptions()
+    
+    # Enable all optimizations: constant folding, operator fusion, etc.
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    
+    # Thread settings for ARM CPU
+    sess_options.intra_op_num_threads = num_threads  # Parallel within an operator
+    sess_options.inter_op_num_threads = 1            # Sequential between operators
+    
+    # Enable memory optimization
+    sess_options.enable_mem_pattern = True
+    sess_options.enable_cpu_mem_arena = True
+    
+    print(f"⚡ ONNX Optimization: ALL (Threads: {num_threads})")
+    # ================================================================
+    
     if use_cuda and 'CUDAExecutionProvider' in ort.get_available_providers():
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         print(f"🚀 Device: NVIDIA GPU (CUDA)")
@@ -230,10 +248,10 @@ def init_onnx_environment(encoder_path, hyper_path, use_cuda=True):
         print(f"⚠️ Device: CPU (ARM/x86)")
 
     print(f"Loading Encoder: {encoder_path}")
-    enc_sess = ort.InferenceSession(encoder_path, providers=providers)
+    enc_sess = ort.InferenceSession(encoder_path, sess_options=sess_options, providers=providers)
     
     print(f"Loading HyperDecoder: {hyper_path}")
-    hyper_sess = ort.InferenceSession(hyper_path, providers=providers)
+    hyper_sess = ort.InferenceSession(hyper_path, sess_options=sess_options, providers=providers)
 
     entropy_bottleneck = EntropyBottleneck(128) 
     gaussian_conditional = GaussianConditional(None)
