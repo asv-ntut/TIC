@@ -1,10 +1,10 @@
 import torch
 import sys
 import os
-from conv2 import SimpleConvStudentModel, get_scale_table
+from compressai.models.tic import TIC, get_scale_table
 
 def dump_cdfs():
-    checkpoint_path = "../1130stcheckpoint_best_loss.pth"
+    checkpoint_path = "./onnx/checkpoint_best_loss.pth.tar"
     
     # Load model
     print(f"Loading checkpoint: {checkpoint_path}")
@@ -23,7 +23,7 @@ def dump_cdfs():
     except:
         pass
 
-    model = SimpleConvStudentModel(N=N, M=M)
+    model = TIC(N=N, M=M)
     model.load_state_dict(new_state_dict, strict=True)
     
     # [FIX] Force CPU execution for CDF generation to match new runtime flow
@@ -51,7 +51,7 @@ def dump_cdfs():
         f.write(f"FIXED_GC_LENGTH = {gc._cdf_length.tolist()}\n")
         f.write(f"FIXED_GC_SCALE_TABLE = {gc.scale_table.tolist()}\n")
         
-    print("Successfully wrote fixed_cdfs.py (EntropyBottleneck + GaussianConditional)")
+    print("✅ Successfully wrote fixed_cdfs.py (EntropyBottleneck + GaussianConditional)")
 
 if __name__ == "__main__":
     dump_cdfs()

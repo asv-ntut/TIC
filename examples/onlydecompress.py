@@ -19,7 +19,7 @@ from PIL import Image
 # 設定：匯入模型
 # ==============================================================================
 try:
-    from conv2 import SimpleConvStudentModel
+    from compressai.models.tic import TIC
 except ImportError as e:
     print(f"錯誤: 找不到 conv2.py，或其依賴套件載入失敗。\n詳細錯誤: {e}")
     sys.exit(1)
@@ -50,68 +50,48 @@ def decompress_method(self, strings, shape):
     self.h_s.cpu()
     self.gaussian_conditional.cpu()
     
-    # [保護機制 1] 轉為雙倍精準度 (Double Precision)
-    # 這能消除 ARM vs x86 的浮點數誤差
-    self.h_s = self.h_s.double() 
-
-    # Z-String Padding
+    # Z-String Padding (for robustness)
     z_str_list = strings[1]
     if isinstance(z_str_list, list) and isinstance(z_str_list[0], (bytes, bytearray)):
          z_str_list[0] = z_str_list[0] + b'\x00' * 4096 
             
-    # 2. 解 Z
+    # 2. Decompress Z
     z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
     if z_hat.device.type != 'cpu': z_hat = z_hat.cpu()
     
-    # [保護機制 1] 輸入也轉為 Double
-    z_hat_double = z_hat.double()
-    
-    # 3. 運算 (在 Double 模式下進行)
-    gaussian_params = self.h_s(z_hat_double)
+    # 3. Mean-Scale Hyperprior: h_s outputs 2M channels (scales + means)
+    gaussian_params = self.h_s(z_hat.float())
     scales_hat, means_hat = gaussian_params.chunk(2, 1)
-
-    # 轉回 Float32 進行量化 (因為後續通常不需要 Double 了)
-    scales_hat = scales_hat.float()
-    means_hat = means_hat.float()
-
-    # 量化邏輯 (必須與壓縮端一致)
-    scales_clamped = scales_hat.clamp(0.5, 32.0)
-    scale_indices = torch.floor((scales_clamped - 0.5) * 2 + 0.5).to(torch.int64).clamp(0, 63)
-    scales_hat = 0.5 + scale_indices.float() * 0.5
-    means_hat = torch.floor(means_hat * 10 + 0.5) / 10
     
-    indexes = self.gaussian_conditional.build_indexes(scales_hat).to(torch.int32).contiguous()
-    means_hat = means_hat.contiguous()
-    indexes = indexes.clamp(0, 63)
+    # Build indexes for entropy coding
+    indexes = self.gaussian_conditional.build_indexes(scales_hat)
 
-    # Y-String Padding
+    # Y-String Padding (for robustness)
     y_str_list = strings[0]
     if isinstance(y_str_list, list) and isinstance(y_str_list[0], (bytes, bytearray)):
         y_str_list[0] = y_str_list[0] + b'\x00' * 4096
             
-    # 4. 解 Y
+    # 4. Decompress Y with means
     try:
         torch.set_num_threads(1)
         y_hat = self.gaussian_conditional.decompress(strings[0], indexes.cpu(), means=means_hat.cpu())
     except Exception as e:
         print(f"[ERROR] Block Corruption: {e}")
-        y_hat = means_hat.clone() # 熔斷 1
+        # Fallback: create zero tensor
+        y_hat = torch.zeros_like(scales_hat)
 
-    # [保護機制 2] 數值熔斷器 (Sanitizer)
-    # 如果解出來的值太扯 (>100)，直接用 Means 覆蓋，消滅雪花
+    # Sanitizer: clamp extreme values
     if torch.isnan(y_hat).any() or y_hat.abs().max() > 100.0:
-        # print("[Sanitizer] Snow detected! Applying blur fix.")
         mask_bad = (y_hat.abs() > 100.0) | torch.isnan(y_hat)
-        y_hat[mask_bad] = means_hat[mask_bad]
+        y_hat[mask_bad] = 0.0
         
     device = next(self.g_s.parameters()).device
-    # 確保 g_s 是 float32 (因為我們沒轉 g_s)
     y_hat = y_hat.to(device).float()
     
     x_hat = self.g_s(y_hat).clamp_(0, 1)
     return {"x_hat": x_hat}
 
-SimpleConvStudentModel.decompress = decompress_method
+TIC.decompress = decompress_method
 
 
 def parse_payload_bytes(payload_data):
@@ -142,7 +122,7 @@ def parse_payload_bytes(payload_data):
     return {"strings": [[y_str], [z_str]], "shape": shape}
 
 
-from conv2 import get_scale_table
+from compressai.models.tic import get_scale_table
 
 def load_satellite_packet(bin_path):
     """
@@ -271,21 +251,13 @@ def load_checkpoint(checkpoint_path):
     except:
         pass
 
-    model = SimpleConvStudentModel(N=N, M=M)
+    model = TIC(N=N, M=M)
     model.load_state_dict(new_state_dict, strict=True)
     
     # ==========================================================================
-    # 量化策略: 強制統一 Scale Table (Coarse Grid)
-    # ==========================================================================
-    # 使用粗刻度 0.5 ~ 32.0 (共 64 階)
-    scale_table = torch.linspace(0.5, 32.0, 64)
-    
-    # 強制更新模型內的表和 CDF
-    model.gaussian_conditional.update_scale_table(scale_table, force=True)
-    model.update(force=True)
-    
-    # ==========================================================================
     # 強制統一 EntropyBottleneck & GaussianConditional CDFs
+    # NOTE: Do NOT call model.update() before loading fixed_cdfs!
+    #       It would overwrite the CDFs and cause decoding artifacts.
     # ==========================================================================
     try:
         from fixed_cdfs import FIXED_EB_CDF, FIXED_EB_OFFSET, FIXED_EB_LENGTH, FIXED_EB_MEDIANS
@@ -320,8 +292,6 @@ def load_checkpoint(checkpoint_path):
     except Exception as e:
         print(f"[WARNING] Failed to overwrite CDFs: {e}")
     # ==========================================================================
-
-    return model.eval()
 
     return model.eval()
 

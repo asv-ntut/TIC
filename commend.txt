@@ -1,19 +1,51 @@
+環境建置（已建置可跳過）
 cd ~/TIC
-python -m venv .venv
-source .venv/bin/activate
 pip install -r examples/requirements.txt
 pip install -e .
 
-板子上執行以下指令
+板子上環境建置執行以下指令
+python -m venv .venv
+source .venv/bin/activate
 .venv/bin/python3 -m ensurepip --upgrade
 .venv/bin/python3 -m pip install --upgrade pip
 pip install -e .
 
+程式執行：
+conda activate tic10
 cd examples
+
+python train.py \
+  -m tic \
+  -d ~/TIC/s2_combined \
+  -e 200 \
+  --batch-size 192 \
+  --num-workers 32 \
+  --cuda \
+  --gpu-id 0 \
+  -q 5 \
+  --roi-factor 1.0 \
+  --name "mean_scale_no_roi"
 
 壓縮端執行
 python dump_cdfs.py
 傳送TIC/examples/fixed_cdfs.py到解壓縮端 確保兩邊檔案相同
 
+執行腳本(調整參數去腳本內部)：
+./compress.sh
+./decompress.sh
+
+單獨程式使用：
 python onlycompress.py "../wang_cropped_4097x3072.png" -p "../1130stcheckpoint_best_loss.pth" 
 python onlydecompress.py "output_satellite/wang_cropped_4097x3072" -p "../1130stcheckpoint_best_loss.pth" --original "../wang_cropped_4097x3072.png"
+
+ONNX 使用方式 (ARM CPU 加速)
+cd onnx
+
+# 1. 產生 ONNX 模型 (從 .pth 轉換)
+python export_onnx.py -p checkpoint_best_loss.pth.tar
+
+# 2. 壓縮圖片 (支援 batch 加速)
+python compress.py '/Users/hsuhaohao/程式/TIC/test.tif' --enc tic_encoder.onnx --hyper tic_hyper_decoder.onnx --batch 8
+
+# 3. 解壓縮
+python decompress.py output_onnx/test --dec tic_decoder.onnx --hyper tic_hyper_decoder.onnx
