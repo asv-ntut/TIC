@@ -86,8 +86,19 @@ def load_satellite_packet(bin_path):
 # ==============================================================================
 # 2. Initialize ONNX and Entropy Models
 # ==============================================================================
-def init_onnx_decoder(decoder_path, hyper_path, use_cuda=True):
+def init_onnx_decoder(decoder_path, hyper_path, use_cuda=True, num_threads=4):
     """Initialize ONNX sessions and entropy models with fixed CDFs."""
+    
+    # ========== ONNX Graph Optimization (Operator Fusion) ==========
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_options.intra_op_num_threads = num_threads
+    sess_options.inter_op_num_threads = 1
+    sess_options.enable_mem_pattern = True
+    sess_options.enable_cpu_mem_arena = True
+    print(f"⚡ ONNX Optimization: ALL (Threads: {num_threads})")
+    # ================================================================
+    
     if use_cuda and 'CUDAExecutionProvider' in ort.get_available_providers():
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         print(f"🚀 Device: NVIDIA GPU (CUDA)")
@@ -96,10 +107,10 @@ def init_onnx_decoder(decoder_path, hyper_path, use_cuda=True):
         print(f"⚠️ Device: CPU")
 
     print(f"Loading Decoder: {decoder_path}")
-    dec_sess = ort.InferenceSession(decoder_path, providers=providers)
+    dec_sess = ort.InferenceSession(decoder_path, sess_options=sess_options, providers=providers)
     
     print(f"Loading HyperDecoder: {hyper_path}")
-    hyper_sess = ort.InferenceSession(hyper_path, providers=providers)
+    hyper_sess = ort.InferenceSession(hyper_path, sess_options=sess_options, providers=providers)
 
     entropy_bottleneck = EntropyBottleneck(128) 
     gaussian_conditional = GaussianConditional(None)
