@@ -1,7 +1,6 @@
-cd ~/TIC
 python -m venv .venv
 source .venv/bin/activate
-pip install -r examples/requirements.txt
+pip install -r ./requirements.txt
 pip install -e .
 
 板子上執行以下指令
@@ -9,11 +8,9 @@ pip install -e .
 .venv/bin/python3 -m pip install --upgrade pip
 pip install -e .
 
-cd examples
-
 壓縮端執行
-python dump_cdfs.py
-傳送TIC/examples/fixed_cdfs.py到解壓縮端 確保兩邊檔案相同
+python _dump_cdfs.py
+傳送./_fixed_cdfs.py到解壓縮端 確保兩邊檔案相同
 
-python onlycompress.py "../wang_cropped_4097x3072.png" -p "../1130stcheckpoint_best_loss.pth" 
-python onlydecompress.py "output_satellite/wang_cropped_4097x3072" -p "../1130stcheckpoint_best_loss.pth" --original "../wang_cropped_4097x3072.png"
+python _compress.py "../wang_cropped_4097x3072.png" -p "../1130stcheckpoint_best_loss.pth" 
+python _decompress.py "output_satellite/wang_cropped_4097x3072" -p "../1130stcheckpoint_best_loss.pth" --original "../wang_cropped_4097x3072.png"
