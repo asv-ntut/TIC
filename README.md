@@ -1,6 +1,6 @@
 ﻿# TIC - Satellite Image Compression System
 
-本專案是一個針對衛星影像設計的深度學習影像壓縮系統。系統核心採用輕量化的卷積神經網路，並針對跨平台（x86 Server 與 ARM Edge Device）運算的數值精確度進行了特殊優化，確保壓縮與解壓縮過程的一致性。
+本專案是一個針對衛星影像設計的深度學習影像壓縮系統。系統核心針對跨平台（x86 Server 與 ARM Edge Device）運算的數值精確度進行了特殊優化，確保壓縮與解壓縮過程的一致性。
 
 ## 目錄 (Table of Contents)
 
@@ -42,7 +42,7 @@ TIC (Tiny Image Compression) 旨在解決衛星端（Edge）有限頻寬與運�
 
 ## 模型架構 (Model Architecture)
 
-本專案核心採用 **SimpleConvStudentModel**，這是一個基於變分自編碼器 (Variational Autoencoder, VAE) 的端對端影像壓縮模型。架構設計參考了 Scale Hyperprior 機制，並針對邊緣運算 (Edge Computing) 進行了輕量化調整。
+本專案核心採用 **SimpleConvStudentModel**，這是一個基於變分自編碼器 (Variational Autoencoder, VAE) 的端對端影像壓縮模型。架構設計參考了 Scale Hyperprior 機制。
 
 ### 1. 主自動編碼器 (Main Autoencoder)
 負責影像特徵的提取與重建，整體下採樣率為 16 ($2^4$)。
@@ -73,7 +73,7 @@ TIC (Tiny Image Compression) 旨在解決衛星端（Edge）有限頻寬與運�
     
 2.  **超合成轉換(Hyper Synthesis Transform) ($\hat{z}$ Usage)**：
     * **原論文**：通常僅使用 $\hat{z}$ 來預測 $\hat{y}$ 的尺度 (Scale, $\sigma$)。
-    * **本專案**：在 Hyper 輔助編碼部分（$\hat{z}$ path），我們採用了 **Mean & Scale** 策略。即 $h_s$ 網路會同時輸出平均值 (Mean, $\mu$) 與尺度 (Scale, $\sigma$) 來參數化 $\hat{y}$ 的高斯分佈。這提供了更精準的機率估計，與原始僅使用 Scale 的做法不同。
+    * **本專案**：在 Hyper 輔助編碼部分（ $\hat{z}$ path），我們採用了 **Mean & Scale** 策略。即 $h_s$ 網路會同時輸出平均值 (Mean, $\mu$) 與尺度 (Scale, $\sigma$) 來參數化 $\hat{y}$ 的高斯分佈。這提供了更精準的機率估計，與原始僅使用 Scale 的做法不同。
 
 ---
 
@@ -138,7 +138,6 @@ TIC (Tiny Image Compression) 旨在解決衛星端（Edge）有限頻寬與運�
 ### 1. 建立虛擬環境 (Server/PC)
 
 ```bash
-cd ~/TIC
 python -m venv .venv
 source .venv/bin/activate
 pip install -r ./requirements.txt
@@ -232,6 +231,7 @@ python _decompress.py "output_directory" \
 
 2. **[Joint Autoregressive and Hierarchical Priors for Learned Image Compression](https://arxiv.org/abs/1809.02736)**
 * *David Minnen, Johannes Ballé, George Toderici*
+
 
 
 
