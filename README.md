@@ -1,4 +1,4 @@
-﻿# TIC - Satellite Image Compression System
+# TIC - Satellite Image Compression System
 
 本專案是一個針對衛星影像設計的深度學習影像壓縮系統。系統核心針對跨平台（x86 Server 與 ARM Edge Device）運算的數值精確度進行了特殊優化，確保壓縮與解壓縮過程的一致性。
 
@@ -42,7 +42,7 @@ TIC (Tiny Image Compression) 旨在解決衛星端（Edge）有限頻寬與運�
 
 ## 模型架構 (Model Architecture)
 
-本專案核心採用 **SimpleConvStudentModel**，這是一個基於變分自編碼器 (Variational Autoencoder, VAE) 的端對端影像壓縮模型。架構設計參考了 Scale Hyperprior 機制。
+本專案核心基於變分自編碼器 (Variational Autoencoder, VAE) 的端對端影像壓縮模型。架構設計參考了 Scale Hyperprior 機制。
 
 ### 1. 主自動編碼器 (Main Autoencoder)
 負責影像特徵的提取與重建，整體下採樣率為 16 ($2^4$)。
