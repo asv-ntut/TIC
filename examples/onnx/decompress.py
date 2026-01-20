@@ -159,7 +159,11 @@ def init_onnx_decoder(decoder_path, hyper_path, use_cuda=True, num_threads=4):
     print(f"Loading HyperDecoder: {hyper_path}")
     hyper_sess = ort.InferenceSession(hyper_path, sess_options=sess_options, providers=providers)
 
-    entropy_bottleneck = EntropyBottleneck(128) 
+    # Auto-detect N from fixed_cdfs (supports both Teacher N=128 and Student N=64)
+    N = len(FIXED_EB_MEDIANS) if HAS_FIXED_CDFS else 128
+    print(f"Detected EntropyBottleneck channels: N={N}")
+    
+    entropy_bottleneck = EntropyBottleneck(N) 
     gaussian_conditional = GaussianConditional(None)
 
     # Apply fixed CDF tables
@@ -249,15 +253,19 @@ def main():
     args = parser.parse_args()
 
     # Smart Defaults for models (FP32 for best quality, no grid lines)
+    # Default search path: student_onnx/ (distilled model)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_onnx_dir = os.path.join(script_dir, "student_onnx")
+    
     dec_path = args.dec
     if dec_path is None:
         # Use FP32 Decoder by default to eliminate grid artifacts
-        dec_path = "tic_decoder.onnx"
+        dec_path = os.path.join(default_onnx_dir, "tic_decoder.onnx")
     
     hyper_path = args.hyper
     if hyper_path is None:
         # Use FP32 HyperDecoder by default (must match compression)
-        hyper_path = "tic_hyper_decoder.onnx"
+        hyper_path = os.path.join(default_onnx_dir, "tic_hyper_decoder.onnx")
 
     # 1. Initialize System
     sessions, entropy_models = init_onnx_decoder(dec_path, hyper_path, use_cuda=not args.cpu)
