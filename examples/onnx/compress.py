@@ -6,8 +6,12 @@ Optimizations:
 2. Batch processing - reduces ONNX launch overhead on ARM
 3. Pure NumPy padding - avoids PyTorch tensor conversion overhead
 
+New Features:
+- Layer-wise profiling with --profile flag
+
 Usage:
-    python nxinfcom_batch.py image.tif --enc encoder.onnx --hyper hyper.onnx --batch 8
+    python compress.py image.tif --enc encoder.onnx --hyper hyper.onnx --batch 8
+    python compress.py image.tif --profile  # Enable per-layer timing
 """
 import argparse
 import os
@@ -16,6 +20,7 @@ import glob
 import time
 import struct
 import zlib
+import json
 import numpy as np
 import onnxruntime as ort
 import torch
@@ -43,6 +48,158 @@ try:
 except ImportError:
     print("\n[CRITICAL ERROR] Cannot find fixed_cdfs.py!")
     sys.exit(1)
+
+# ==============================================================================
+# 1a. ONNX Profiling Analysis
+# ==============================================================================
+def analyze_onnx_profile(profile_file, model_name="Model"):
+    """
+    Parse ONNX Runtime profiling JSON and display layer-wise timing.
+    Groups operators by type (Conv, GDN components, ReLU, etc.) for architecture analysis.
+    
+    Architecture Mapping:
+    - Conv: All convolution layers in g_a, g_s, h_a, h_s
+    - Pow/Mul/Sqrt/Reciprocal: GDN/IGDN normalization components
+    - ReLU: Activation in h_a and h_s
+    - Abs: |y| operation before h_a
+    - DepthToSpace: Upsampling operations (marked as 2↑ in diagram)
+    
+    Note: ONNX Runtime may produce files with multiple JSON arrays concatenated.
+    """
+    if not os.path.exists(profile_file):
+        print(f"⚠️ Profile file not found: {profile_file}")
+        return {}
+    
+    # Check if file is empty
+    file_size = os.path.getsize(profile_file)
+    if file_size == 0:
+        print(f"⚠️ Profile file is empty: {profile_file}")
+        os.remove(profile_file)
+        return {}
+    
+    try:
+        with open(profile_file, 'r') as f:
+            content = f.read()
+        
+        # ONNX Runtime sometimes produces multiple JSON arrays concatenated
+        # Try to parse just the first valid JSON array
+        profile_data = []
+        
+        # Find the first complete JSON array
+        bracket_count = 0
+        start_idx = None
+        end_idx = None
+        
+        for i, char in enumerate(content):
+            if char == '[':
+                if bracket_count == 0:
+                    start_idx = i
+                bracket_count += 1
+            elif char == ']':
+                bracket_count -= 1
+                if bracket_count == 0 and start_idx is not None:
+                    end_idx = i + 1
+                    break
+        
+        if start_idx is not None and end_idx is not None:
+            json_str = content[start_idx:end_idx]
+            profile_data = json.loads(json_str)
+        else:
+            # Fallback: try loading as-is
+            profile_data = json.loads(content)
+            
+    except json.JSONDecodeError as e:
+        print(f"⚠️ Failed to parse profile file {profile_file}: {e}")
+        try:
+            os.remove(profile_file)
+        except:
+            pass
+        return {}
+    
+    # Collect operator timing
+    op_times = {}  # {"Conv": [time1, time2, ...], "GDN components": [...]}
+    layer_details = []  # [(layer_name, op_type, time_us), ...]
+    
+    # GDN is decomposed into these basic ops in ONNX
+    gdn_ops = {"Pow", "Sqrt", "Reciprocal"}
+    
+    for event in profile_data:
+        if event.get("cat") == "Node":
+            name = event.get("name", "Unknown")
+            dur_us = event.get("dur", 0)  # Duration in microseconds
+            args = event.get("args", {})
+            op_name = args.get("op_name", "")
+            
+            # Use op_name from args if available
+            if op_name:
+                op_type = op_name
+            else:
+                op_type = "Unknown"
+            
+            # Group GDN-related operations
+            if op_type in gdn_ops:
+                op_type = f"GDN ({op_type})"
+            elif op_type == "Mul" and ("gdn" in name.lower() or "norm" in name.lower()):
+                op_type = "GDN (Mul)"
+            
+            if op_type not in op_times:
+                op_times[op_type] = []
+            op_times[op_type].append(dur_us)
+            layer_details.append((name, op_type, dur_us))
+    
+    if not op_times:
+        print(f"⚠️ No operator data found in {profile_file}")
+        try:
+            os.remove(profile_file)
+        except:
+            pass
+        return {}
+    
+    # Calculate statistics
+    print(f"\n{'='*75}")
+    print(f"🔬 {model_name} Layer-wise Profiling")
+    print(f"{'='*75}")
+    
+    total_time = sum(sum(times) for times in op_times.values())
+    
+    # Sort by total time per operator type
+    sorted_ops = sorted(op_times.items(), key=lambda x: sum(x[1]), reverse=True)
+    
+    # Architecture mapping hints
+    arch_hints = {
+        "Conv": "→ All conv layers",
+        "Mul": "→ GDN/IGDN + general",
+        "Pow": "→ GDN normalization",
+        "Sqrt": "→ GDN normalization", 
+        "Reciprocal": "→ GDN normalization",
+        "ReLU": "→ h_a, h_s activation",
+        "Relu": "→ h_a, h_s activation",
+        "Abs": "→ |y| before h_a",
+        "DepthToSpace": "→ Upsampling (2↑)",
+        "Split": "→ Channel split",
+    }
+    
+    print(f"{'Operator':<20} | {'Count':>6} | {'Total (ms)':>12} | {'Avg (ms)':>10} | {'%':>6} | Arch")
+    print("-" * 75)
+    
+    for op_type, times in sorted_ops:
+        total_ms = sum(times) / 1000.0
+        avg_ms = total_ms / len(times) if times else 0
+        percentage = (sum(times) / total_time * 100) if total_time > 0 else 0
+        hint = arch_hints.get(op_type.split()[0], "")
+        print(f"{op_type:<20} | {len(times):>6} | {total_ms:>12.3f} | {avg_ms:>10.3f} | {percentage:>5.1f}% | {hint}")
+    
+    print("-" * 75)
+    print(f"{'TOTAL':<20} | {sum(len(t) for t in op_times.values()):>6} | {total_time/1000:.3f} ms")
+    print("=" * 75)
+    
+    # Cleanup profile file
+    try:
+        os.remove(profile_file)
+    except:
+        pass
+    
+    return op_times
 
 # ==============================================================================
 # 1. Satellite Communication Packet Format
@@ -220,25 +377,36 @@ def process_batch_onnx(sessions, entropy_models, batch_x, batch_meta,
 # ==============================================================================
 # 5. Initialize ONNX Environment
 # ==============================================================================
-def init_onnx_environment(encoder_path, hyper_path, use_cuda=True, num_threads=4):
+def init_onnx_environment(encoder_path, hyper_path, use_cuda=True, num_threads=4, enable_profiling=False):
     """Initialize ONNX sessions and entropy models with fixed CDFs."""
     
-    # ========== ONNX Graph Optimization (Operator Fusion) ==========
-    sess_options = ort.SessionOptions()
+    def create_session_options(profile_prefix=""):
+        """Create a new SessionOptions instance for each session."""
+        sess_options = ort.SessionOptions()
+        
+        # Enable all optimizations: constant folding, operator fusion, etc.
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        
+        # Thread settings for ARM CPU
+        sess_options.intra_op_num_threads = num_threads  # Parallel within an operator
+        sess_options.inter_op_num_threads = 1            # Sequential between operators
+        
+        # Enable memory optimization
+        sess_options.enable_mem_pattern = True
+        sess_options.enable_cpu_mem_arena = True
+        
+        # Enable profiling if requested
+        if enable_profiling:
+            sess_options.enable_profiling = True
+            if profile_prefix:
+                sess_options.profile_file_prefix = profile_prefix
+        
+        return sess_options
     
-    # Enable all optimizations: constant folding, operator fusion, etc.
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    
-    # Thread settings for ARM CPU
-    sess_options.intra_op_num_threads = num_threads  # Parallel within an operator
-    sess_options.inter_op_num_threads = 1            # Sequential between operators
-    
-    # Enable memory optimization
-    sess_options.enable_mem_pattern = True
-    sess_options.enable_cpu_mem_arena = True
+    if enable_profiling:
+        print(f"📊 Profiling: ENABLED (will generate per-layer timing)")
     
     print(f"⚡ ONNX Optimization: ALL (Threads: {num_threads})")
-    # ================================================================
     
     if use_cuda and 'CUDAExecutionProvider' in ort.get_available_providers():
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
@@ -247,11 +415,14 @@ def init_onnx_environment(encoder_path, hyper_path, use_cuda=True, num_threads=4
         providers = ['CPUExecutionProvider']
         print(f"⚠️ Device: CPU (ARM/x86)")
 
+    # Create separate SessionOptions for each session to avoid profile conflicts
     print(f"Loading Encoder: {encoder_path}")
-    enc_sess = ort.InferenceSession(encoder_path, sess_options=sess_options, providers=providers)
+    enc_opts = create_session_options("encoder_profile")
+    enc_sess = ort.InferenceSession(encoder_path, sess_options=enc_opts, providers=providers)
     
     print(f"Loading HyperDecoder: {hyper_path}")
-    hyper_sess = ort.InferenceSession(hyper_path, sess_options=sess_options, providers=providers)
+    hyper_opts = create_session_options("hyper_profile")
+    hyper_sess = ort.InferenceSession(hyper_path, sess_options=hyper_opts, providers=providers)
 
     entropy_bottleneck = EntropyBottleneck(128) 
     gaussian_conditional = GaussianConditional(None)
@@ -275,7 +446,7 @@ def init_onnx_environment(encoder_path, hyper_path, use_cuda=True, num_threads=4
         torch.tensor(fixed_cdfs.FIXED_GC_LENGTH, device=device, dtype=torch.int32))
     gaussian_conditional.scale_table = torch.tensor(fixed_cdfs.FIXED_GC_SCALE_TABLE, device=device)
     
-    return (enc_sess, hyper_sess), (entropy_bottleneck, gaussian_conditional)
+    return (enc_sess, hyper_sess), (entropy_models := (entropy_bottleneck, gaussian_conditional)), enable_profiling
 
 # ==============================================================================
 # 6. Main Compression Loop (Batched)
@@ -376,6 +547,7 @@ def main():
     parser.add_argument("--batch", type=int, default=8, help="Batch size (default: 8)")
     parser.add_argument("--id", type=int, default=1, help="Image ID (0-255)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU mode")
+    parser.add_argument("--profile", action="store_true", help="Enable per-layer profiling (Conv, GDN, etc.)")
     args = parser.parse_args()
 
     # Smart Defaults for models (Mixed Precision: INT8 Encoder + FP32 Hyper)
@@ -388,7 +560,10 @@ def main():
         # Use FP32 HyperDecoder by default to prevent BPP explosion
         hyper_path = "tic_hyper_decoder.onnx"
 
-    sessions, entropy_models = init_onnx_environment(enc_path, hyper_path, use_cuda=not args.cpu)
+    sessions, entropy_models, profiling_enabled = init_onnx_environment(
+        enc_path, hyper_path, use_cuda=not args.cpu, enable_profiling=args.profile
+    )
+    enc_sess, hyper_sess = sessions
 
     image_files = []
     for path in args.input_path:
@@ -411,6 +586,42 @@ def main():
             print(f"\n[CRITICAL ERROR] {e}")
             import traceback
             traceback.print_exc()
+    
+    # Analyze profiling data if enabled
+    if profiling_enabled:
+        print("\n" + "="*70)
+        print("🔬 Analyzing Layer-wise Profiling Data...")
+        print("="*70)
+        
+        # End profiling to flush data to files
+        # Each session now has its own profile file with unique prefix
+        profile_files = []  # [(model_name, file_path), ...]
+        
+        try:
+            enc_profile = enc_sess.end_profiling()
+            if enc_profile and os.path.exists(enc_profile):
+                profile_files.append(("Encoder (g_a + h_a)", enc_profile))
+        except Exception as e:
+            print(f"⚠️ Failed to get Encoder profile: {e}")
+        
+        try:
+            hyper_profile = hyper_sess.end_profiling()
+            if hyper_profile and os.path.exists(hyper_profile):
+                profile_files.append(("HyperDecoder (h_s)", hyper_profile))
+        except Exception as e:
+            print(f"⚠️ Failed to get HyperDecoder profile: {e}")
+        
+        # Analyze each profile file
+        for model_name, pf in profile_files:
+            analyze_onnx_profile(pf, model_name)
+        
+        # Also check for any remaining profile files (fallback)
+        remaining = sorted(glob.glob("*_profile*.json") + glob.glob("onnxruntime_profile*.json"))
+        for pf in remaining:
+            analyze_onnx_profile(pf, "Model")
+        
+        if not profile_files and not remaining:
+            print("⚠️ No profile data generated. Try running with fewer patches.")
 
 if __name__ == "__main__":
     main()
