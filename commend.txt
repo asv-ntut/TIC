@@ -60,3 +60,5 @@ python compress.py test.tif --batch 8
 #   - Decoder: FP32
 #   - HyperDecoder: FP32
 python decompress.py output_onnx/test --original test.tif --brightness 1.5
+
+python train_student.py -d ~/TIC/s2_combined --teacher-checkpoint /home/al617/TIC/TIC/examples/pretrained/tic/only_mean/checkpoint_best_loss.pth.tar -e 200 --batch-size 192 --num-workers 32 --cuda --gpu-id 0 --name "mean_scale_distill_student64_no_roi"

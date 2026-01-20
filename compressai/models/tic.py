@@ -225,3 +225,126 @@ class TIC(nn.Module):
         x_hat = self.g_s(y_hat).clamp_(0, 1)
         
         return {"x_hat": x_hat}
+
+
+# ==========================================================
+# TIC_Student: 輕量化學生模型 (用於知識蒸餾)
+# ==========================================================
+class TIC_Student(nn.Module):
+    """
+    Lightweight Student Model for Knowledge Distillation.
+    
+    Architecture is identical to TIC but with reduced channel count:
+    - N=64 (vs N=128 in teacher) for reduced computation
+    - M=192 (same as teacher) for feature distillation alignment
+    
+    Reference: arXiv:2509.10366v1
+    """
+    
+    def __init__(self, N=64, M=192):
+        super().__init__()
+        self.N = N
+        self.M = M
+
+        # g_a: Analysis Transform (Encoder)
+        self.g_a = nn.Sequential(
+            conv(3, N, kernel_size=5, stride=2),
+            GDN(N),
+            conv(N, N, kernel_size=5, stride=2),
+            GDN(N),
+            conv(N, N, kernel_size=5, stride=2),
+            GDN(N),
+            conv(N, M, kernel_size=5, stride=2),
+        )
+
+        # g_s: Synthesis Transform (Decoder)
+        self.g_s = nn.Sequential(
+            deconv(M, N, kernel_size=5, stride=2),
+            GDN(N, inverse=True),
+            deconv(N, N, kernel_size=5, stride=2),
+            GDN(N, inverse=True),
+            deconv(N, N, kernel_size=5, stride=2),
+            GDN(N, inverse=True),
+            deconv(N, 3, kernel_size=5, stride=2),
+        )
+
+        # h_a: Hyper Analysis Transform
+        self.h_a = nn.Sequential(
+            conv(M, N, kernel_size=3, stride=1),
+            nn.ReLU(inplace=True),
+            conv(N, N, kernel_size=5, stride=2),
+            nn.ReLU(inplace=True),
+            conv(N, N, kernel_size=5, stride=2),
+        )
+
+        # h_s: Hyper Synthesis Transform
+        self.h_s = nn.Sequential(
+            deconv(N, N, kernel_size=5, stride=2),
+            nn.ReLU(inplace=True),
+            deconv(N, N, kernel_size=5, stride=2),
+            nn.ReLU(inplace=True),
+            conv(N, M * 2, kernel_size=3, stride=1),
+        )
+
+        self.entropy_bottleneck = EntropyBottleneck(N)
+        self.gaussian_conditional = GaussianConditional(None)
+
+    def forward(self, x):
+        y = self.g_a(x)
+        z = self.h_a(torch.abs(y))
+        
+        z_hat, z_likelihoods = self.entropy_bottleneck(z)
+        
+        gaussian_params = self.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        
+        y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
+        
+        x_hat = self.g_s(y_hat)
+
+        return {
+            "x_hat": x_hat,
+            "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
+            "y_hat": y_hat,  # For distillation
+            "z_hat": z_hat,
+        }
+
+    def aux_loss(self):
+        return sum(m.loss() for m in self.modules() if isinstance(m, EntropyBottleneck))
+
+    def update(self, scale_table=None, force=False):
+        if scale_table is None:
+            scale_table = get_scale_table()
+        self.gaussian_conditional.update_scale_table(scale_table, force=force)
+
+        updated = False
+        for m in self.children():
+            if not isinstance(m, EntropyBottleneck):
+                continue
+            rv = m.update(force=force)
+            updated |= rv
+        return updated
+
+    def load_state_dict(self, state_dict, strict=True):
+        update_registered_buffers(
+            self.entropy_bottleneck,
+            "entropy_bottleneck",
+            ["_quantized_cdf", "_offset", "_cdf_length"],
+            state_dict,
+        )
+        update_registered_buffers(
+            self.gaussian_conditional,
+            "gaussian_conditional",
+            ["_quantized_cdf", "_offset", "_cdf_length", "scale_table"],
+            state_dict,
+        )
+        super().load_state_dict(state_dict, strict=strict)
+
+    @classmethod
+    def from_state_dict(cls, state_dict):
+        """Return a new model instance from `state_dict`."""
+        N = state_dict["g_a.0.weight"].size(0)
+        M = state_dict["g_a.6.weight"].size(0)
+        net = cls(N, M)
+        net.load_state_dict(state_dict)
+        return net

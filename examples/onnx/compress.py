@@ -551,14 +551,20 @@ def main():
     args = parser.parse_args()
 
     # Smart Defaults for models (Mixed Precision: INT8 Encoder + FP32 Hyper)
+    # Default search path: student_onnx/ (distilled model)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_onnx_dir = os.path.join(script_dir, "student_onnx")
+    
     enc_path = args.enc
     if enc_path is None:
-        enc_path = "tic_encoder_static_int8.onnx" if os.path.exists("tic_encoder_static_int8.onnx") else "tic_encoder.onnx"
+        int8_path = os.path.join(default_onnx_dir, "tic_encoder_static_int8.onnx")
+        fp32_path = os.path.join(default_onnx_dir, "tic_encoder.onnx")
+        enc_path = int8_path if os.path.exists(int8_path) else fp32_path
     
     hyper_path = args.hyper
     if hyper_path is None:
         # Use FP32 HyperDecoder by default to prevent BPP explosion
-        hyper_path = "tic_hyper_decoder.onnx"
+        hyper_path = os.path.join(default_onnx_dir, "tic_hyper_decoder.onnx")
 
     sessions, entropy_models, profiling_enabled = init_onnx_environment(
         enc_path, hyper_path, use_cuda=not args.cpu, enable_profiling=args.profile

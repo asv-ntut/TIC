@@ -23,7 +23,7 @@ EXAMPLES_DIR = os.path.dirname(SCRIPT_DIR)
 ROOT_DIR = os.path.dirname(EXAMPLES_DIR)
 sys.path.insert(0, ROOT_DIR)
 
-from compressai.models.tic import TIC
+from compressai.models.tic import TIC, TIC_Student
 
 
 # ==============================================================================
@@ -74,7 +74,7 @@ class NetDecoder(nn.Module):
 # ==============================================================================
 
 def load_checkpoint(checkpoint_path, device='cpu'):
-    """Load TIC model from checkpoint."""
+    """Load TIC or TIC_Student model from checkpoint."""
     print(f"Loading checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
@@ -102,7 +102,14 @@ def load_checkpoint(checkpoint_path, device='cpu'):
     
     print(f"Model parameters: N={N}, M={M}")
     
-    model = TIC(N=N, M=M)
+    # Choose model class based on N
+    if N == 64:
+        print("Detected TIC_Student model (N=64)")
+        model = TIC_Student(N=N, M=M)
+    else:
+        print("Detected TIC teacher model")
+        model = TIC(N=N, M=M)
+    
     model.load_state_dict(new_state_dict, strict=True)
     model.eval()
     
