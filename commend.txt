@@ -54,6 +54,7 @@ python quantize_static.py --img /path/to/image_folder
 #   - Encoder: INT8
 #   - HyperDecoder: FP32
 python compress.py test.tif --batch 8
+python compress.py test.tif --enc teacher_onnx/tic_encoder_static_int8.onnx --hyper teacher_onnx/tic_hyper_decoder.onnx
 
 # 4. 解壓縮
 # 預設模式 (高品質)：

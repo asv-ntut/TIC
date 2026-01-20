@@ -424,7 +424,11 @@ def init_onnx_environment(encoder_path, hyper_path, use_cuda=True, num_threads=4
     hyper_opts = create_session_options("hyper_profile")
     hyper_sess = ort.InferenceSession(hyper_path, sess_options=hyper_opts, providers=providers)
 
-    entropy_bottleneck = EntropyBottleneck(128) 
+    # Auto-detect N from fixed_cdfs (supports both Teacher N=128 and Student N=64)
+    N = len(fixed_cdfs.FIXED_EB_MEDIANS)
+    print(f"Detected EntropyBottleneck channels: N={N}")
+    
+    entropy_bottleneck = EntropyBottleneck(N) 
     gaussian_conditional = GaussianConditional(None)
 
     # Apply fixed CDF tables
