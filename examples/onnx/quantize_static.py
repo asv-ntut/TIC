@@ -14,6 +14,7 @@ import numpy as np
 import onnxruntime as ort
 from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantFormat, QuantType, quant_pre_process
 from PIL import Image
+from tqdm import tqdm
 
 class TICDataReader(CalibrationDataReader):
     def __init__(self, patches, input_name):
@@ -54,27 +55,39 @@ def load_calibration_data(img_path, enc_path, hyper_path, num_patches=200, rgb_b
         print("⚠️ tifffile not installed, satellite TIFF support limited")
     
     def normalize_to_float(img_array):
-        """Normalize array to float32 [0, 1] range using percentile (same as train.py)."""
+        """Normalize array to float32 [0, 1] range.
+        
+        IMPORTANT: Goes through uint8 intermediate step to match train.py (ImageFolder):
+        16-bit -> percentile -> uint8 (0-255) -> float32 (/255)
+        
+        This ensures calibration data distribution matches training data exactly.
+        """
         if img_array.dtype == np.uint8:
             return img_array.astype(np.float32) / 255.0
         elif img_array.dtype in (np.uint16, np.int16):
-            # 16-bit satellite: use percentile-based normalization
+            # 16-bit satellite: percentile-based normalization -> uint8 -> float32
             p2, p98 = np.percentile(img_array, (2, 98))
-            normalized = (img_array.astype(np.float32) - p2) / (p98 - p2 + 1e-8)
-            return np.clip(normalized, 0, 1)
+            normalized = (img_array.astype(np.float32) - p2) / (p98 - p2 + 1e-8) * 255.0
+            uint8_array = np.clip(normalized, 0, 255).astype(np.uint8)  # Critical: go through uint8!
+            return uint8_array.astype(np.float32) / 255.0
         elif img_array.dtype in (np.float32, np.float64):
             if img_array.max() <= 1.0:
-                return img_array.astype(np.float32)
+                # Already normalized, but apply uint8 quantization for consistency
+                uint8_array = np.clip(img_array * 255, 0, 255).astype(np.uint8)
+                return uint8_array.astype(np.float32) / 255.0
             else:
                 p2, p98 = np.percentile(img_array, (2, 98))
-                normalized = (img_array - p2) / (p98 - p2 + 1e-8)
-                return np.clip(normalized, 0, 1).astype(np.float32)
+                normalized = (img_array - p2) / (p98 - p2 + 1e-8) * 255.0
+                uint8_array = np.clip(normalized, 0, 255).astype(np.uint8)
+                return uint8_array.astype(np.float32) / 255.0
         else:
-            # Fallback: min-max normalization
+            # Fallback: min-max normalization with uint8 step
             img_min, img_max = img_array.min(), img_array.max()
             if img_max > img_min:
-                return ((img_array - img_min) / (img_max - img_min)).astype(np.float32)
-            return img_array.astype(np.float32)
+                normalized = (img_array - img_min) / (img_max - img_min) * 255.0
+                uint8_array = np.clip(normalized, 0, 255).astype(np.uint8)
+                return uint8_array.astype(np.float32) / 255.0
+            return np.zeros_like(img_array, dtype=np.float32)
     
     image_files = []
     if os.path.isdir(img_path):
@@ -145,12 +158,12 @@ def load_calibration_data(img_path, enc_path, hyper_path, num_patches=200, rgb_b
 
     print(f"Collected total {len(patches)} image patches.")
     
-    # Rest of the latent generation logic remains the same
+    # Generate latents for decoder calibration
     print("Running Encoder for calibration latents...")
     enc_sess = ort.InferenceSession(enc_path)
     y_latents = []
     z_latents = []
-    for p in patches:
+    for p in tqdm(patches, desc="Generating latents"):
         out = enc_sess.run(None, {enc_sess.get_inputs()[0].name: p[np.newaxis, ...]})
         y_latents.append(out[0][0])
         z_latents.append(out[1][0])
