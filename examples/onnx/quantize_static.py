@@ -162,28 +162,39 @@ def load_calibration_data(img_path, enc_path, hyper_path, num_patches=200, rgb_b
     }
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--img", type=str, required=True, help="Image for calibration")
+    parser = argparse.ArgumentParser(description="ONNX Static Quantization (PTQ) for TIC")
+    parser.add_argument("--img", type=str, required=True, help="Image or directory for calibration")
+    parser.add_argument("--onnx-dir", type=str, default=".", help="Directory containing original ONNX files (default: current dir)")
+    parser.add_argument("--output-dir", type=str, default=None, help="Output directory for INT8 models (default: same as onnx-dir)")
     args = parser.parse_args()
 
     print("=== ONNX Static Quantization (PTQ) ===")
     
+    onnx_dir = args.onnx_dir
+    output_dir = args.output_dir if args.output_dir else onnx_dir
+    
     # Pre-check files
     required = ["tic_encoder.onnx", "tic_hyper_decoder.onnx", "tic_decoder.onnx"]
     for f in required:
-        if not os.path.exists(f):
-            print(f"Error: {f} not found.")
+        fpath = os.path.join(onnx_dir, f)
+        if not os.path.exists(fpath):
+            print(f"Error: {fpath} not found.")
             return
+    
+    print(f"ONNX source: {onnx_dir}")
+    print(f"Output dir:  {output_dir}")
 
     # Load calibration data for all stages
-    calib_data = load_calibration_data(args.img, "tic_encoder.onnx", "tic_hyper_decoder.onnx")
+    enc_path = os.path.join(onnx_dir, "tic_encoder.onnx")
+    hyper_path = os.path.join(onnx_dir, "tic_hyper_decoder.onnx")
+    calib_data = load_calibration_data(args.img, enc_path, hyper_path)
 
     for m_base in ["tic_encoder", "tic_hyper_decoder", "tic_decoder"]:
-        model_fp32 = f"{m_base}.onnx"
-        model_pre = f"{m_base}_pre.onnx"
-        model_int8 = f"{m_base}_static_int8.onnx"
+        model_fp32 = os.path.join(onnx_dir, f"{m_base}.onnx")
+        model_pre = os.path.join(output_dir, f"{m_base}_pre.onnx")
+        model_int8 = os.path.join(output_dir, f"{m_base}_static_int8.onnx")
         
-        print(f"\nProcessing {model_fp32}...")
+        print(f"\nProcessing {m_base}...")
         
         # 1. Preprocess
         quant_pre_process(model_fp32, model_pre)
@@ -208,9 +219,6 @@ def main():
         if os.path.exists(model_pre):
             os.remove(model_pre)
         print(f"✅ Generated {model_int8}")
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
