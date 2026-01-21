@@ -144,13 +144,20 @@ def load_calibration_data(img_path, enc_path, hyper_path, num_patches=200, rgb_b
             c, h, w = arr.shape
             ps = 256
             count = 0
-            # Sample patches from current image
-            for y in range(0, h - ps, max(ps, h // 10)):
-                for x in range(0, w - ps, max(ps, w // 10)):
-                    patches.append(arr[:, y:y+ps, x:x+ps])
-                    count += 1
+            
+            # Handle images exactly equal to patch size
+            if h == ps and w == ps:
+                patches.append(arr)
+                count = 1
+            elif h >= ps and w >= ps:
+                # Sample patches from larger images
+                for y in range(0, h - ps + 1, max(ps, h // 10)):
+                    for x in range(0, w - ps + 1, max(ps, w // 10)):
+                        patches.append(arr[:, y:y+ps, x:x+ps])
+                        count += 1
+                        if count >= patches_per_img: break
                     if count >= patches_per_img: break
-                if count >= patches_per_img: break
+            # Skip images smaller than patch size
             
             if len(patches) >= num_patches: break
         except Exception as e:
