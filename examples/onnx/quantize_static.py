@@ -186,6 +186,7 @@ def main():
     parser.add_argument("--img", type=str, required=True, help="Image or directory for calibration")
     parser.add_argument("--onnx-dir", type=str, default=".", help="Directory containing original ONNX files (default: current dir)")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory for INT8 models (default: same as onnx-dir)")
+    parser.add_argument("--num-patches", type=int, default=200, help="Number of calibration patches (default: 200, recommend 500-1000 for better accuracy)")
     args = parser.parse_args()
 
     print("=== ONNX Static Quantization (PTQ) ===")
@@ -207,7 +208,7 @@ def main():
     # Load calibration data for all stages
     enc_path = os.path.join(onnx_dir, "tic_encoder.onnx")
     hyper_path = os.path.join(onnx_dir, "tic_hyper_decoder.onnx")
-    calib_data = load_calibration_data(args.img, enc_path, hyper_path)
+    calib_data = load_calibration_data(args.img, enc_path, hyper_path, num_patches=args.num_patches)
 
     for m_base in ["tic_encoder", "tic_hyper_decoder", "tic_decoder"]:
         model_fp32 = os.path.join(onnx_dir, f"{m_base}.onnx")
