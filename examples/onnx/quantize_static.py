@@ -28,9 +28,53 @@ class TICDataReader(CalibrationDataReader):
     def rewind(self):
         self.enum_data = iter([{self.input_name: p[np.newaxis, ...]} for p in self.patches])
 
-def load_calibration_data(img_path, enc_path, hyper_path, num_patches=200):
-    """Load calibration patches from a file or a directory of images"""
+def load_calibration_data(img_path, enc_path, hyper_path, num_patches=200, rgb_bands=(3, 2, 1)):
+    """Load calibration patches from a file or a directory of images.
+    
+    Uses the same preprocessing as train.py (ImageFolder):
+    - Sentinel-2 TIFF: Uses rgb_bands=(3, 2, 1) for B4, B3, B2 (true color)
+    - Percentile-based normalization (p2, p98) for better contrast
+    - Output: float32 in [0, 1] range
+    
+    Args:
+        img_path: Path to image file or directory
+        enc_path: Path to encoder ONNX
+        hyper_path: Path to hyper decoder ONNX  
+        num_patches: Number of patches to extract
+        rgb_bands: Band indices for RGB (default: Sentinel-2 true color)
+    """
     import glob
+    
+    # Try to import tifffile for satellite imagery
+    try:
+        import tifffile
+        HAS_TIFFFILE = True
+    except ImportError:
+        HAS_TIFFFILE = False
+        print("⚠️ tifffile not installed, satellite TIFF support limited")
+    
+    def normalize_to_float(img_array):
+        """Normalize array to float32 [0, 1] range using percentile (same as train.py)."""
+        if img_array.dtype == np.uint8:
+            return img_array.astype(np.float32) / 255.0
+        elif img_array.dtype in (np.uint16, np.int16):
+            # 16-bit satellite: use percentile-based normalization
+            p2, p98 = np.percentile(img_array, (2, 98))
+            normalized = (img_array.astype(np.float32) - p2) / (p98 - p2 + 1e-8)
+            return np.clip(normalized, 0, 1)
+        elif img_array.dtype in (np.float32, np.float64):
+            if img_array.max() <= 1.0:
+                return img_array.astype(np.float32)
+            else:
+                p2, p98 = np.percentile(img_array, (2, 98))
+                normalized = (img_array - p2) / (p98 - p2 + 1e-8)
+                return np.clip(normalized, 0, 1).astype(np.float32)
+        else:
+            # Fallback: min-max normalization
+            img_min, img_max = img_array.min(), img_array.max()
+            if img_max > img_min:
+                return ((img_array - img_min) / (img_max - img_min)).astype(np.float32)
+            return img_array.astype(np.float32)
     
     image_files = []
     if os.path.isdir(img_path):
@@ -43,15 +87,46 @@ def load_calibration_data(img_path, enc_path, hyper_path, num_patches=200):
         raise ValueError(f"No images found at {img_path}")
 
     print(f"Loading {num_patches} patches from {len(image_files)} images...")
+    print(f"  RGB bands: {rgb_bands} (B4=Red, B3=Green, B2=Blue for Sentinel-2)")
+    print(f"  Normalization: Percentile (p2, p98) - same as train.py")
     
     patches = []
     patches_per_img = max(1, num_patches // len(image_files))
     
     for f in image_files:
         try:
-            with Image.open(f) as img:
-                img = img.convert("RGB")
-                arr = np.array(img).transpose(2, 0, 1).astype(np.float32) / 255.0
+            ext = os.path.splitext(f)[-1].lower()
+            
+            # Handle TIFF (potentially 16-bit satellite imagery)
+            if ext in ['.tif', '.tiff'] and HAS_TIFFFILE:
+                raw = tifffile.imread(f)
+                
+                # Handle dim order
+                if raw.ndim == 2:
+                    # Grayscale -> stack to 3 channels
+                    raw = np.stack([raw, raw, raw], axis=-1)
+                elif raw.ndim == 3:
+                    # Check if channels-first (C, H, W) or channels-last (H, W, C)
+                    if raw.shape[0] < raw.shape[2]:
+                        raw = np.transpose(raw, (1, 2, 0))  # (C,H,W) -> (H,W,C)
+                
+                # Extract RGB bands (matches train.py ImageFolder)
+                num_bands = raw.shape[2]
+                if rgb_bands is not None and num_bands >= max(rgb_bands) + 1:
+                    r_idx, g_idx, b_idx = rgb_bands
+                    img_array = raw[:, :, [r_idx, g_idx, b_idx]]
+                else:
+                    img_array = raw[:, :, :3]
+                
+                # Normalize using percentile (same as train.py)
+                arr = normalize_to_float(img_array)
+                arr = arr.transpose(2, 0, 1)  # (H,W,C) -> (C,H,W)
+                
+            else:
+                # Standard 8-bit image
+                with Image.open(f) as img:
+                    img = img.convert("RGB")
+                    arr = np.array(img).transpose(2, 0, 1).astype(np.float32) / 255.0
             
             c, h, w = arr.shape
             ps = 256
