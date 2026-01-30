@@ -440,7 +440,7 @@ def parse_args(argv):
     parser.add_argument(
         "--roi-factor",
         type=float,
-        default=0.1,
+        default=1.0,
         help="Weight for water regions in ROI loss (default: %(default)s)",
     )
     
