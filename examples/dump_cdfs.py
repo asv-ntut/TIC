@@ -1,10 +1,10 @@
 import torch
 import sys
 import os
-from conv2 import SimpleConvStudentModel, get_scale_table
+from gdn import TIC, get_scale_table
 
 def dump_cdfs():
-    checkpoint_path = "../1130stcheckpoint_best_loss.pth"
+    checkpoint_path = "pretrained/tic_custom_q3_q3/checkpoint_best_loss.pth.tar"
     
     # Load model
     print(f"Loading checkpoint: {checkpoint_path}")
@@ -23,7 +23,7 @@ def dump_cdfs():
     except:
         pass
 
-    model = SimpleConvStudentModel(N=N, M=M)
+    model = TIC(N=N, M=M)
     model.load_state_dict(new_state_dict, strict=True)
     
     # [FIX] Force CPU execution for CDF generation to match new runtime flow

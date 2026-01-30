@@ -19,9 +19,9 @@ from PIL import Image
 # 設定：匯入模型
 # ==============================================================================
 try:
-    from conv2 import SimpleConvStudentModel
+    from gdn import TIC as SimpleConvStudentModel
 except ImportError as e:
-    print(f"錯誤: 找不到 conv2.py，或其依賴套件載入失敗。\n詳細錯誤: {e}")
+    print(f"錯誤: 找不到 gdn.py，或其依賴套件載入失敗。\n詳細錯誤: {e}")
     sys.exit(1)
 
 try:
@@ -142,7 +142,7 @@ def parse_payload_bytes(payload_data):
     return {"strings": [[y_str], [z_str]], "shape": shape}
 
 
-from conv2 import get_scale_table
+from gdn import get_scale_table
 
 def load_satellite_packet(bin_path):
     """

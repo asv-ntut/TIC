@@ -7,7 +7,6 @@ import os
 import time
 import logging
 from datetime import datetime
-from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -26,7 +25,6 @@ except ImportError:
     rasterio = None
 
 from compressai.entropy_models import EntropyBottleneck, GaussianConditional
-from compressai.zoo import image_models
 from compressai.models.utils import conv, deconv, update_registered_buffers
 
 # --- Constants and Utility Functions ---
@@ -79,13 +77,15 @@ class TifImageFolder(Dataset):
             with rasterio.open(filepath) as src:
                 raw_data = src.read().astype(np.float32)
 
-            if np.isnan(raw_data).any():
-                for i in range(raw_data.shape[0]):
-                    band = raw_data[i]
-                    if np.isnan(band).any():
-                        band_mean = np.nanmean(band)
-                        band[np.isnan(band)] = band_mean
-                        raw_data[i] = band
+            # [加速優化 1] 移除 NaN 檢查 (假設訓練資料是正常的)
+            # 這會大幅提升讀取速度，因為不需要 CPU 掃描每個像素
+            # if np.isnan(raw_data).any():
+            #     for i in range(raw_data.shape[0]):
+            #         band = raw_data[i]
+            #         if np.isnan(band).any():
+            #             band_mean = np.nanmean(band)
+            #             band[np.isnan(band)] = band_mean
+            #             raw_data[i] = band
 
             if raw_data.shape[0] > max(self.RGB_BANDS):
                 rgb_data = raw_data[self.RGB_BANDS, :, :]
@@ -109,18 +109,6 @@ class TifImageFolder(Dataset):
         return len(self.samples)
 
 
-# --- Hook Functions ---
-teacher_features = {}
-
-
-def get_teacher_y_hat_hook(module, input, output):
-    teacher_features['y'] = output[0]
-
-
-def get_teacher_z_hat_hook(module, input, output):
-    teacher_features['z_hat'] = output[0]
-
-
 def deconv_pixelshuffle(in_channels, out_channels, kernel_size=5, stride=2):
     internal_channels = out_channels * (stride ** 2)
     return nn.Sequential(
@@ -129,8 +117,8 @@ def deconv_pixelshuffle(in_channels, out_channels, kernel_size=5, stride=2):
     )
 
 
-# --- Model Definition ---
-class SimpleConvStudentModel(nn.Module):
+# --- Model Definition (Standard) ---
+class SimpleConvModel(nn.Module):
     def __init__(self, N=128, M=192):
         super().__init__()
         self.N, self.M = N, M
@@ -197,29 +185,6 @@ class SimpleConvStudentModel(nn.Module):
                                   ["_quantized_cdf", "_offset", "_cdf_length", "scale_table"], state_dict)
         super().load_state_dict(state_dict, strict=strict)
 
-    @classmethod
-    def from_state_dict(cls, state_dict):
-        try:
-            first_g_a_weight_key = 'g_a.0.weight'
-            if first_g_a_weight_key not in state_dict:
-                g_a_weight_keys = sorted([k for k in state_dict if k.startswith('g_a.') and k.endswith('.weight')])
-                if not g_a_weight_keys: raise KeyError("No g_a weights found")
-                first_g_a_weight_key = g_a_weight_keys[0]
-            N = state_dict[first_g_a_weight_key].size(0)
-        except Exception as e:
-            print(f"Error inferring N: {e}. Assuming default N=128.")
-            N = 128
-        try:
-            g_a_weight_keys = sorted([k for k in state_dict if k.startswith('g_a.') and k.endswith('.weight')])
-            last_g_a_weight_key = g_a_weight_keys[-1]
-            M = state_dict[last_g_a_weight_key].size(0)
-        except Exception as e:
-            print(f"Error inferring M: {e}. Assuming default M=192.")
-            M = 192
-        net = cls(N, M)
-        net.load_state_dict(state_dict, strict=False)
-        return net
-
 
 class RateDistortionLoss(nn.Module):
     def __init__(self, lmbda=1e-2):
@@ -229,7 +194,7 @@ class RateDistortionLoss(nn.Module):
 
     def forward(self, output, target):
         N, _, H, W = target.size()
-        out = {};
+        out = {}
         num_pixels = N * H * W
         y_likelihoods = output["likelihoods"].get("y")
         z_likelihoods = output["likelihoods"].get("z")
@@ -266,7 +231,7 @@ class CustomDataParallel(nn.DataParallel):
 
 # --- Setup Functions ---
 def init(args):
-    base_dir = f'./distilled/{args.name}_from_{args.teacher_model}_q{args.teacher_quality}/'
+    base_dir = f'./checkpoints/{args.name}_q{args.quality_level}/'
     os.makedirs(base_dir, exist_ok=True)
     return base_dir
 
@@ -295,16 +260,12 @@ def configure_optimizers(net, args):
 
 
 # --- Training and Evaluation Functions ---
-# ✨✨✨ 修改：傳入 loss_weights 並返回平均 Loss ✨✨✨
-def train_one_epoch(student_model, teacher_model, criterion, train_dataloader, optimizer, aux_optimizer, epoch,
-                    clip_max_norm, alpha, beta, gamma, use_wandb, loss_weights):
-    student_model.train()
-    teacher_model.eval()
-    device = next(student_model.parameters()).device
-    task_loss_meter = AverageMeter()
-    response_loss_meter = AverageMeter()
-    feature_loss_meter = AverageMeter()
-    hyper_latent_loss_meter = AverageMeter()
+def train_one_epoch(model, criterion, train_dataloader, optimizer, aux_optimizer, epoch, clip_max_norm, use_wandb):
+    model.train()
+    device = next(model.parameters()).device
+    loss_meter = AverageMeter()
+    bpp_loss_meter = AverageMeter()
+    mse_loss_meter = AverageMeter()
     aux_loss_meter = AverageMeter()
 
     for i, d in enumerate(train_dataloader):
@@ -312,91 +273,50 @@ def train_one_epoch(student_model, teacher_model, criterion, train_dataloader, o
         optimizer.zero_grad()
         aux_optimizer.zero_grad()
 
-        with torch.no_grad():
-            _ = teacher_model(d)
-
-        student_out = student_model(d)
-        task_loss_dict = criterion(student_out, d)
-        task_loss = task_loss_dict["loss"]
-
-        # 1. 計算 Response Distillation Loss
-        response_distill_loss = torch.tensor(0.0).to(device)
-        if alpha > 0:
-            with torch.no_grad():
-                teacher_out_full = teacher_model(d)
-                if isinstance(teacher_out_full, dict) and "x_hat" in teacher_out_full:
-                    teacher_x_hat = teacher_out_full["x_hat"].detach()
-                else:
-                    teacher_x_hat = teacher_out_full.detach()
-            response_distill_loss = F.mse_loss(student_out["x_hat"], teacher_x_hat)
-
-        # 2. 計算 Feature Distillation Loss
-        feature_distill_loss = torch.tensor(0.0).to(device)
-        if beta > 0:
-            teacher_y_hat = teacher_features.get('y')
-            feature_distill_loss = F.mse_loss(student_out["y_hat"], teacher_y_hat.detach())
-
-        # 3. 計算 Hyper-Latent Distillation Loss
-        hyper_latent_distill_loss = torch.tensor(0.0).to(device)
-        if gamma > 0:
-            teacher_z_hat = teacher_features.get('z_hat')
-            hyper_latent_distill_loss = F.mse_loss(student_out["z_hat"], teacher_z_hat.detach())
-
-        # ✨✨✨ 修改：應用動態權重 ✨✨✨
-        w_resp = loss_weights['response']
-        w_feat = loss_weights['feature']
-        w_hyper = loss_weights['hyper']
-
-        total_loss = task_loss + \
-                     (alpha * w_resp * response_distill_loss) + \
-                     (beta * w_feat * feature_distill_loss) + \
-                     (gamma * w_hyper * hyper_latent_distill_loss)
-
-        total_loss.backward()
-        if clip_max_norm > 0: torch.nn.utils.clip_grad_norm_(student_model.parameters(), clip_max_norm)
+        out_net = model(d)
+        out_criterion = criterion(out_net, d)
+        
+        out_criterion["loss"].backward()
+        if clip_max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_max_norm)
         optimizer.step()
 
-        aux_loss = student_model.aux_loss()
+        aux_loss = model.aux_loss()
         aux_loss.backward()
         aux_optimizer.step()
 
-        task_loss_meter.update(task_loss.item())
-        if alpha > 0: response_loss_meter.update(response_distill_loss.item())
-        if beta > 0: feature_loss_meter.update(feature_distill_loss.item())
-        if gamma > 0: hyper_latent_loss_meter.update(hyper_latent_distill_loss.item())
+        loss_meter.update(out_criterion["loss"].item())
+        bpp_loss_meter.update(out_criterion["bpp_loss"].item())
+        mse_loss_meter.update(out_criterion["mse_loss"].item())
         aux_loss_meter.update(aux_loss.item())
 
         if i % 100 == 0:
             logging.info(
-                f"Train ep {epoch + 1} | [{i * len(d)}/{len(train_dataloader.dataset)}] | Loss:{total_loss.item():.4f} | Task:{task_loss_meter.val:.4f} | Resp:{response_loss_meter.val:.6f} (w={w_resp:.2e}) | Feat:{feature_loss_meter.val:.6f} (w={w_feat:.2e}) | Hyper:{hyper_latent_loss_meter.val:.6f} (w={w_hyper:.2e})")
+                f"Train ep {epoch + 1} | [{i * len(d)}/{len(train_dataloader.dataset)}] | "
+                f"Loss: {loss_meter.val:.4f} | MSE: {mse_loss_meter.val:.5f} | Bpp: {bpp_loss_meter.val:.4f} | Aux: {aux_loss_meter.val:.2f}"
+            )
 
         if use_wandb and i % 100 == 0:
             step = epoch * len(train_dataloader) + i
-            log_dict = {"train/step": step, "train/loss": total_loss.item(), "train/task_loss": task_loss.item(),
-                        "train/bpp_loss": task_loss_dict["bpp_loss"].item(),
-                        "train/mse_loss": task_loss_dict["mse_loss"].item(), "train/aux_loss": aux_loss.item(),
-                        "train/lr": optimizer.param_groups[0]['lr']}
-            if alpha > 0: log_dict["train/response_loss"] = response_distill_loss.item()
-            if beta > 0: log_dict["train/feature_loss"] = feature_distill_loss.item()
-            if gamma > 0: log_dict["train/hyper_latent_loss"] = hyper_latent_distill_loss.item()
-            wandb.log(log_dict)
+            wandb.log({
+                "train/step": step,
+                "train/loss": loss_meter.val,
+                "train/bpp_loss": bpp_loss_meter.val,
+                "train/mse_loss": mse_loss_meter.val,
+                "train/aux_loss": aux_loss_meter.val,
+                "train/lr": optimizer.param_groups[0]['lr']
+            })
 
-    # ✨✨✨ 修改：回傳平均 Loss 供 main 更新權重 ✨✨✨
-    return {
-        "task": torch.tensor(task_loss_meter.avg, device=device),
-        "response": torch.tensor(response_loss_meter.avg, device=device),
-        "feature": torch.tensor(feature_loss_meter.avg, device=device),
-        "hyper": torch.tensor(hyper_latent_loss_meter.avg, device=device)
-    }
+    return loss_meter.avg
 
 
 def eval_epoch(epoch, dataloader, model, criterion, use_wandb):
     model.eval()
     device = next(model.parameters()).device
-    loss_meter = AverageMeter();
-    bpp_loss_meter = AverageMeter();
-    mse_loss_meter = AverageMeter();
-    aux_loss_meter = AverageMeter();
+    loss_meter = AverageMeter()
+    bpp_loss_meter = AverageMeter()
+    mse_loss_meter = AverageMeter()
+    aux_loss_meter = AverageMeter()
     psnr_meter = AverageMeter()
 
     with torch.no_grad():
@@ -404,43 +324,44 @@ def eval_epoch(epoch, dataloader, model, criterion, use_wandb):
             d = d.to(device)
             out_net = model(d)
             out_criterion = criterion(out_net, d)
+
             aux_loss_meter.update(model.aux_loss())
             bpp_loss_meter.update(out_criterion["bpp_loss"])
             loss_meter.update(out_criterion["loss"])
             mse_val = out_criterion["mse_loss"].item()
             mse_loss_meter.update(mse_val)
-            if mse_val > 0: psnr_meter.update(10 * math.log10(1. / mse_val))
+            if mse_val > 0:
+                psnr_meter.update(10 * math.log10(1. / mse_val))
 
     log_prefix = "Final Test" if isinstance(epoch, str) else f"Validation epoch {epoch + 1}"
     logging.info(
         f"{log_prefix}: Loss:{loss_meter.avg:.4f} | MSE:{mse_loss_meter.avg:.6f} | PSNR:{psnr_meter.avg:.3f} | Bpp:{bpp_loss_meter.avg:.4f} | Aux:{aux_loss_meter.avg:.4f}")
 
     if use_wandb and not isinstance(epoch, str):
-        wandb.log({"val/epoch": epoch + 1, "val/loss": loss_meter.avg, "val/mse_loss": mse_loss_meter.avg,
-                   "val/psnr": psnr_meter.avg, "val/bpp_loss": bpp_loss_meter.avg, "val/aux_loss": aux_loss_meter.avg})
+        wandb.log({
+            "val/epoch": epoch + 1, 
+            "val/loss": loss_meter.avg, 
+            "val/mse_loss": mse_loss_meter.avg,
+            "val/psnr": psnr_meter.avg, 
+            "val/bpp_loss": bpp_loss_meter.avg, 
+            "val/aux_loss": aux_loss_meter.avg
+        })
     return loss_meter.avg
 
 
 def save_checkpoint(state, is_best, base_dir, filename="checkpoint.pth.tar"):
     path = os.path.join(base_dir, filename)
     torch.save(state, path)
-    if is_best: shutil.copyfile(path, os.path.join(base_dir, "checkpoint_best_loss.pth.tar"))
+    if is_best:
+        shutil.copyfile(path, os.path.join(base_dir, "checkpoint_best_loss.pth.tar"))
 
 
 # --- Argument Parsing ---
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description="Distillation with Dynamic Weight Balancing (TIF supported).")
+    parser = argparse.ArgumentParser(description="Standard VAE Training (No Distillation) for 16-bit TIF.")
     parser.add_argument("--wandb", action="store_true", help="Enable W&B logging.")
-    parser.add_argument("--wandb_project", type=str, default="student-distill", help="W&B project name.")
-    parser.add_argument("--alpha", type=float, default=1.0, help="Response loss base weight.")
-    parser.add_argument("--beta", type=float, default=1.0, help="Latent loss base weight.")
-    parser.add_argument("--gamma", type=float, default=1.0, help="Hyper-latent loss base weight.")
-    parser.add_argument("--warmup-epochs", type=int, default=0, help="Warmup epochs.")
+    parser.add_argument("--wandb_project", type=str, default="satellite-compression", help="W&B project name.")
     parser.add_argument("-d", "--dataset", type=str, required=True, help="Training dataset path (folder with TIFs).")
-    parser.add_argument("--teacher-model", type=str, required=True, help="Teacher model name.")
-    parser.add_argument("--teacher-quality", type=int, required=True, help="Teacher model quality.")
-    parser.add_argument("--teacher-checkpoint", type=str, required=True, help="Teacher checkpoint path.")
-    parser.add_argument("--checkpoint", type=str, help="Student checkpoint to resume.")
     parser.add_argument("-e", "--epochs", type=int, default=300, help="Epochs.")
     parser.add_argument("-lr", "--learning-rate", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument("--aux-learning-rate", type=float, default=1e-3, help="Aux LR.")
@@ -448,12 +369,22 @@ def parse_args(argv):
     parser.add_argument("--test-batch-size", type=int, default=1, help="Test batch size.")
     parser.add_argument("--patch-size", type=int, nargs=2, default=(256, 256), help="Crop size.")
     parser.add_argument("--clip_max_norm", type=float, default=1.0, help="Gradient clipping.")
-    parser.add_argument("--lambda", dest="lmbda", type=float, default=0.01, help="RD loss lambda.")
+    
+    # Lambda 控制品質：值越大，畫質越好但檔案越大；值越小，壓縮率越高但畫質越差
+    parser.add_argument("--lambda", dest="lmbda", type=float, default=0.01, help="RD loss lambda (control quality).")
+    parser.add_argument("--quality-level", type=int, default=3, help="Quality index (for logging purpose).")
+    
     parser.add_argument("-n", "--num-workers", type=int, default=8, help="Workers.")
     parser.add_argument("--cuda", action="store_true", help="Use cuda.")
     parser.add_argument("--save", action="store_true", default=True, help="Save checkpoint.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--checkpoint", type=str, help="Resume from checkpoint.")
     parser.add_argument('--name', type=str, default=datetime.now().strftime('%Y-%m-%d_%H%M%S'), help="Experiment name.")
+    
+    # Hidden params to define model size (N, M)
+    parser.add_argument("--N", type=int, default=128, help="Number of channels in latent space.")
+    parser.add_argument("--M", type=int, default=192, help="Number of channels in hyperprior.")
+    
     args = parser.parse_args(argv)
     return args
 
@@ -462,6 +393,7 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
     base_dir = init(args)
+    
     if args.seed is not None:
         torch.manual_seed(args.seed)
         random.seed(args.seed)
@@ -472,7 +404,7 @@ def main(argv):
         wandb.init(project=args.wandb_project, name=args.name, config=vars(args))
 
     setup_logger(os.path.join(base_dir, 'train.log'))
-    logging.info(f"Distillation run: {args.name}")
+    logging.info(f"Training run: {args.name}")
 
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
     logging.info(f"Training on {device}")
@@ -488,44 +420,23 @@ def main(argv):
         logging.error(f"Error loading dataset: {e}")
         sys.exit(1)
 
+    # [加速優化 2] 啟用 persistent_workers (當 workers > 0 時)
+    # 這會讓 DataLoader 在 epoch 之間保持 workers 存活，不用重新啟動
+    use_persistent = (args.num_workers > 0)
+    
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True,
-                                  pin_memory=(device == "cuda"))
+                                  pin_memory=(device == "cuda"), persistent_workers=use_persistent)
     val_dataloader = DataLoader(val_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers,
-                                shuffle=False, pin_memory=(device == "cuda"))
+                                shuffle=False, pin_memory=(device == "cuda"), persistent_workers=use_persistent)
 
-    # Teacher Model
-    logging.info(f"Loading teacher model '{args.teacher_model}'...")
-    teacher_net = image_models[args.teacher_model](quality=args.teacher_quality, pretrained=False).to(device)
-    checkpoint = torch.load(args.teacher_checkpoint, map_location=device)
-    teacher_net.load_state_dict(checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint, strict=False)
-    teacher_net.eval()
-    for param in teacher_net.parameters(): param.requires_grad = False
-
-    # Infer N, M
-    teacher_N, teacher_M = 128, 192  # Default
-    try:
-        sd = teacher_net.state_dict()
-        if 'g_a.0.weight' in sd: teacher_N = sd['g_a.0.weight'].size(0)
-        keys = sorted([k for k in sd.keys() if 'g_a' in k and 'weight' in k])
-        if keys: teacher_M = sd[keys[-1]].size(0)
-    except Exception:
-        pass
-
-    # Student Model
-    student_net = SimpleConvStudentModel(N=teacher_N, M=teacher_M).to(device)
-
-    # Register Hooks
-    if hasattr(teacher_net, 'gaussian_conditional'):
-        teacher_net.gaussian_conditional.register_forward_hook(get_teacher_y_hat_hook)
-    if hasattr(teacher_net, 'entropy_bottleneck'):
-        teacher_net.entropy_bottleneck.register_forward_hook(get_teacher_z_hat_hook)
+    # Model Setup (No Teacher)
+    net = SimpleConvModel(N=args.N, M=args.M).to(device)
 
     if args.cuda and torch.cuda.device_count() > 1:
-        student_net = CustomDataParallel(student_net)
-        teacher_net = CustomDataParallel(teacher_net)
+        net = CustomDataParallel(net)
 
-    optimizer, aux_optimizer = configure_optimizers(student_net, args)
-    lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs - args.warmup_epochs)
+    optimizer, aux_optimizer = configure_optimizers(net, args)
+    lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=10)
     criterion = RateDistortionLoss(lmbda=args.lmbda)
 
     # Resume logic
@@ -533,70 +444,29 @@ def main(argv):
     if args.checkpoint:
         logging.info(f"Resuming: {args.checkpoint}")
         cp = torch.load(args.checkpoint, map_location=device)
-        student_net.load_state_dict(cp["state_dict"], strict=False)
+        net.load_state_dict(cp["state_dict"], strict=False)
         if "optimizer" in cp: optimizer.load_state_dict(cp["optimizer"])
         if "aux_optimizer" in cp: aux_optimizer.load_state_dict(cp["aux_optimizer"])
         last_epoch = cp.get("epoch", -1) + 1
 
-    # ✨✨✨ 初始化動態權重 (預設為 1.0) ✨✨✨
-    loss_weights = {
-        "response": torch.tensor(1.0, device=device),
-        "feature": torch.tensor(1.0, device=device),
-        "hyper": torch.tensor(1.0, device=device)
-    }
-    logging.info("Initial dynamic weights set to 1.0")
-
     best_loss = float("inf")
-    epsilon = 1e-8  # 防止除以零
 
     try:
         for epoch in range(last_epoch, args.epochs):
             logging.info(f"====== Epoch {epoch + 1}/{args.epochs} ======")
 
-            # Warmup: 前幾圈不進行特徵蒸餾 (beta=0, gamma=0)
-            cur_beta = 0.0 if epoch < args.warmup_epochs else args.beta
-            cur_gamma = 0.0 if epoch < args.warmup_epochs else args.gamma
+            train_loss = train_one_epoch(net, criterion, train_dataloader, optimizer,
+                                        aux_optimizer, epoch, args.clip_max_norm, use_wandb)
 
-            # 訓練一個 epoch，並獲取回傳的平均 loss
-            avg_losses = train_one_epoch(student_net, teacher_net, criterion, train_dataloader, optimizer,
-                                         aux_optimizer, epoch, args.clip_max_norm, args.alpha, cur_beta, cur_gamma,
-                                         use_wandb, loss_weights)
+            val_loss = eval_epoch(epoch, val_dataloader, net, criterion, use_wandb)
 
-            # ✨✨✨ 每 10 個 epoch 更新一次動態權重 ✨✨✨
-            if (epoch + 1) % 10 == 0 and epoch > 0:
-                logging.info(f"Updating dynamic loss weights (End of Epoch {epoch + 1})...")
-                avg_task = avg_losses['task']
-                avg_resp = avg_losses['response']
-                avg_feat = avg_losses['feature']
-                avg_hype = avg_losses['hyper']
-
-                # 計算新權重: Target / (Current + eps)
-                # 確保分母不為 0，且只有當該 Loss 有被啟用時才更新
-                if avg_resp > epsilon: loss_weights['response'] = avg_task / (avg_resp + epsilon)
-                if avg_feat > epsilon: loss_weights['feature'] = avg_task / (avg_feat + epsilon)
-                if avg_hype > epsilon: loss_weights['hyper'] = avg_task / (avg_hype + epsilon)
-
-                logging.info(
-                    f"New Weights -> Resp: {loss_weights['response']:.2e}, Feat: {loss_weights['feature']:.2e}, Hyper: {loss_weights['hyper']:.2e}")
-
-                if use_wandb:
-                    wandb.log({
-                        "weights/response": loss_weights['response'].item(),
-                        "weights/feature": loss_weights['feature'].item(),
-                        "weights/hyper": loss_weights['hyper'].item(),
-                        "epoch": epoch + 1
-                    })
-
-            val_loss = eval_epoch(epoch, val_dataloader, student_net, criterion, use_wandb)
-
-            if epoch >= args.warmup_epochs: lr_scheduler.step()
+            lr_scheduler.step(val_loss)
 
             is_best = val_loss < best_loss
             best_loss = min(val_loss, best_loss)
 
             if args.save:
-                sd = student_net.module.state_dict() if isinstance(student_net,
-                                                                   CustomDataParallel) else student_net.state_dict()
+                sd = net.module.state_dict() if isinstance(net, CustomDataParallel) else net.state_dict()
                 save_checkpoint({"epoch": epoch, "state_dict": sd, "optimizer": optimizer.state_dict(),
                                  "aux_optimizer": aux_optimizer.state_dict()}, is_best, base_dir)
 

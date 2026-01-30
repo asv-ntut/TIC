@@ -20,9 +20,9 @@ from PIL import Image
 # 設定：匯入模型
 # ==============================================================================
 try:
-    from conv2 import SimpleConvStudentModel
+    from gdn import TIC as SimpleConvStudentModel
 except ImportError as e:
-    print(f"錯誤: 找不到 conv2.py，或其依賴套件載入失敗。\n詳細錯誤: {e}")
+    print(f"錯誤: 找不到 gdn.py，或其依賴套件載入失敗。\n詳細錯誤: {e}")
     sys.exit(1)
 
 # 嘗試匯入 tifffile (取代 rasterio，較容易在 ARM 平台安裝)
@@ -37,7 +37,7 @@ except ImportError:
 # ==============================================================================
 def compress_method(self, x):
     y = self.g_a(x)
-    z = self.h_a(y)
+    z = self.h_a(torch.abs(y))  # TIC 使用 abs(y) 作為 h_a 輸入
     
     # Force CPU
     self.entropy_bottleneck.cpu()
@@ -101,7 +101,7 @@ def compress_method(self, x):
 # 套用修改
 SimpleConvStudentModel.compress = compress_method
 
-from conv2 import get_scale_table
+from gdn import get_scale_table
 
 # ==============================================================================
 # 衛星通訊專用封包函式
